@@ -1,0 +1,37 @@
+# Virtual environments
+env/
+env311/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Audio files (generated)
+input.wav
+output.txt
+
+# Whisper model cache
+*.pt
+
+# Logs
+install_log.txt
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
