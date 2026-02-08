@@ -1,37 +1,172 @@
-# Virtual environments
-env/
-env311/
+# ========================================
+# Environment & Secrets
+# ========================================
+# Environment configuration files with API keys
+.env
+.env.*
+!.env.example
+!.env.*.example
+backend/.env.config
+*.config
+!*.config.example
 
-# Python cache
+# ========================================
+# Python
+# ========================================
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-*.pyo
 
-# Jupyter Notebook checkpoints
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.env/
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+.python-version
+
+# ========================================
+# Jupyter Notebook
+# ========================================
 .ipynb_checkpoints/
+*.ipynb_checkpoints
+*/.ipynb_checkpoints/*
 
-# Audio files (generated)
-input.wav
-output.txt
-
-# Whisper model cache
-*.pt
-
-# Logs
-install_log.txt
-
-# OS files
-Thumbs.db
-.DS_Store
-
-# IDE
+# ========================================
+# IDE & Editor
+# ========================================
+.idea/
 .vscode/
 *.swp
 *.swo
+*~
+.project
+.pydevproject
+.spyderproject
+.spyproject
+*.sublime-project
+*.sublime-workspace
 
-# Distribution / packaging
-dist/
-build/
-*.egg-info/
-*.egg
+# ========================================
+# OS Generated Files
+# ========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ========================================
+# Dataset & Audio Files (Large files)
+# ========================================
+# Custom audio dataset
+Nepali_speech_to_text/dataset/custom_dataset/audios/
+Nepali_speech_to_text/dataset/ne_np_female (SLR43)/wavs/
+Nepali_speech_to_text/dataset/male-female-data (SLR143)/
+
+# Audio file formats
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.wma
+
+# ========================================
+# Generated & Output Files
+# ========================================
+generated_documents/
+backend/generated_documents/
+uploads/
+output/
+outputs/
+logs/
+*.log
+
+# ========================================
+# Model Files (Large files)
+# ========================================
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.h5
+*.onnx
+models/
+checkpoints/
+
+# ========================================
+# Temporary & Cache
+# ========================================
+*.tmp
+*.temp
+*.cache
+.cache/
+tmp/
+temp/
+
+# ========================================
+# Testing & Coverage
+# ========================================
+.coverage
+.tox
+.nox
+htmlcov/
+.pytest_cache/
+.hypothesis/
+coverage.xml
+*.cover
+nosetests.xml
+
+# ========================================
+# Documentation builds
+# ========================================
+docs/_build/
+site/
+
+# ========================================
+# Hugging Face
+# ========================================
+.huggingface/
+
+# ========================================
+# Windows specific
+# ========================================
+*.lnk

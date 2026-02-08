@@ -8,7 +8,16 @@ from dotenv import load_dotenv
 import json
 
 # Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env.config file (since .env is used as venv dir)
+# Get the directory where this script is located
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+config_path = os.path.join(BASE_DIR, ".env.config")
+load_dotenv(dotenv_path=config_path)
+
+if not os.getenv("GEMINI_API_KEY"):
+    logger.warning("GEMINI_API_KEY not found in .env.config, trying default load_dotenv")
+    # Fallback to default check (might load from system env)
+    load_dotenv()
 import tempfile
 from typing import Optional, Dict, Any
 import aiofiles
@@ -379,4 +388,27 @@ async def get_document_types():
     }
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import socket
+    import sys
+    
+    # Find available port starting from 8000
+    def find_available_port(start_port=8000):
+        for port in range(start_port, start_port + 10):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('localhost', port))
+                    s.close()
+                    return port
+            except OSError:
+                continue
+        return None
+    
+    available_port = find_available_port()
+    if available_port:
+        print(f"🌐 Starting server on port {available_port}")
+        print(f"📄 API docs at: http://localhost:{available_port}/docs")
+        uvicorn.run(app, host="0.0.0.0", port=available_port)
+    else:
+        print("❌ No available ports found in range 8000-8010")
+        print("Please close some applications and try again")
+        sys.exit(1)

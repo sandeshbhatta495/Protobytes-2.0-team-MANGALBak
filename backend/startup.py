@@ -106,7 +106,30 @@ def main():
         import main
         if __name__ == "__main__":
             import uvicorn
-            uvicorn.run(main.app, host="0.0.0.0", port=8000)
+            import socket
+            
+            # Find available port starting from 8000
+            def find_available_port(start_port=8000):
+                for port in range(start_port, start_port + 10):
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            s.bind(('localhost', port))
+                            s.close()
+                            return port
+                    except OSError:
+                        continue
+                return None
+            
+            available_port = find_available_port()
+            if available_port:
+                logger.info(f"Starting server on port {available_port}")
+                logger.info(f"API docs at: http://localhost:{available_port}/docs")
+                uvicorn.run(main.app, host="0.0.0.0", port=available_port)
+            else:
+                logger.error("No available ports found in range 8000-8010")
+                logger.error("Please close some applications and try again")
+                sys.exit(1)
+                
     except ImportError as e:
         logger.error(f"Failed to import main module: {e}")
         sys.exit(1)
