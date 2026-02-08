@@ -11,11 +11,13 @@ import json
 # Load environment variables from .env.config file (since .env is used as venv dir)
 # Get the directory where this script is located
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIR = os.path.join(BASE_DIR, "..", "frontend")
 config_path = os.path.join(BASE_DIR, ".env.config")
 load_dotenv(dotenv_path=config_path)
 
 if not os.getenv("GEMINI_API_KEY"):
-    logger.warning("GEMINI_API_KEY not found in .env.config, trying default load_dotenv")
+    import logging as _log
+    _log.warning("GEMINI_API_KEY not found in .env.config, trying default load_dotenv")
     # Fallback to default check (might load from system env)
     load_dotenv()
 import tempfile
@@ -54,12 +56,14 @@ app.add_middleware(
 )
 
 # Mount static files (only if directory exists)
-if os.path.exists("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+static_dir = os.path.join(BASE_DIR, "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 else:
-    # Create static directory if it doesn't exist
-    os.makedirs("static", exist_ok=True)
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+    os.makedirs(static_dir, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# Frontend is served via routes below (/, /index.html, /script.js)
 
 # Global variables
 whisper_model = None
@@ -79,6 +83,10 @@ class TransliterationRequest(BaseModel):
 
 async def initialize_models():
     global whisper_model, gemini_model, nepali_asr
+    
+    # Load templates first so they are always available even if models fail
+    await load_templates()
+    logger.info(f"Loaded {len(templates)} document templates")
     
     # Load Whisper model (as fallback)
     try:
@@ -105,18 +113,22 @@ async def initialize_models():
         logger.info("Gemini model configured")
     else:
         logger.warning("GEMINI_API_KEY not found in environment")
-    
-    # Load templates
-    await load_templates()
 
 async def load_templates():
     global templates
-    template_dir = "templates"
-    if os.path.exists(template_dir):
-        for filename in os.listdir(template_dir):
-            if filename.endswith('.json'):
-                with open(os.path.join(template_dir, filename), 'r', encoding='utf-8') as f:
+    template_dir = os.path.join(BASE_DIR, "templates")
+    if not os.path.exists(template_dir):
+        logger.warning(f"Template directory not found: {template_dir}")
+        return
+    for filename in os.listdir(template_dir):
+        if filename.endswith('.json'):
+            try:
+                path = os.path.join(template_dir, filename)
+                with open(path, 'r', encoding='utf-8') as f:
                     templates[filename[:-5]] = json.load(f)
+                logger.info(f"Loaded template: {filename}")
+            except Exception as e:
+                logger.error(f"Failed to load template {filename}: {e}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -124,7 +136,29 @@ async def startup_event():
 
 @app.get("/")
 async def root():
+    """Serve the frontend app so the website opens in the browser."""
+    index_path = os.path.join(FRONTEND_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path, media_type="text/html")
     return {"message": "Sarkari-Sarathi API is running"}
+
+
+@app.get("/index.html")
+async def serve_index():
+    """Serve index.html for direct or refreshed requests."""
+    index_path = os.path.join(FRONTEND_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/script.js")
+async def serve_script():
+    """Serve frontend script."""
+    script_path = os.path.join(FRONTEND_DIR, "script.js")
+    if os.path.exists(script_path):
+        return FileResponse(script_path, media_type="application/javascript")
+    raise HTTPException(status_code=404, detail="Not found")
 
 @app.post("/transcribe-audio")
 async def transcribe_audio(audio: UploadFile = File(...)):
@@ -304,13 +338,13 @@ async def generate_pdf(content: str, document_type: str, user_data: Dict) -> str
     c.setFont(font_name, 12)
     
     # Add government header
-    c.setFont(font_name, 16, bold=True)
+    c.setFont(font_name, 16)
     c.drawString(inch, height - inch, "काठमाडौं महानगरपालिका")
     c.setFont(font_name, 14)
     c.drawString(inch, height - 1.3*inch, "वडा नं. [वडा नं.]")
     
     # Add subject line
-    c.setFont(font_name, 12, bold=True)
+    c.setFont(font_name, 12)
     subject = f"विषय: {get_document_subject(document_type)}"
     c.drawString(inch, height - 1.8*inch, subject)
     
@@ -375,6 +409,12 @@ async def download_document(filename: str):
     
     return FileResponse(file_path, media_type='application/pdf', filename=filename)
 
+@app.get("/templates")
+async def list_templates():
+    """List loaded template keys (for debugging)."""
+    return {"loaded": list(templates.keys()), "count": len(templates)}
+
+
 @app.get("/document-types")
 async def get_document_types():
     """Get available document types"""
@@ -386,6 +426,26 @@ async def get_document_types():
             "infrastructure": ["electricity_connection", "water_connection", "road_access"]
         }
     }
+
+@app.get("/locations")
+async def get_locations():
+    """Get Nepal administrative division data"""
+    try:
+        location_file = os.path.join(BASE_DIR, "locations.json")
+        if os.path.exists(location_file):
+            with open(location_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {"error": "Locations file not found"}
+    except Exception as e:
+        logger.error(f"Error serving locations: {e}")
+        raise HTTPException(status_code=500, detail="Error loading location data")
+
+@app.get("/template/{document_type}")
+async def get_template(document_type: str):
+    """Get pattern definition for a specific document type"""
+    if document_type not in templates:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return templates[document_type]
 
 if __name__ == "__main__":
     import socket
@@ -405,8 +465,8 @@ if __name__ == "__main__":
     
     available_port = find_available_port()
     if available_port:
-        print(f"🌐 Starting server on port {available_port}")
-        print(f"📄 API docs at: http://localhost:{available_port}/docs")
+        print(f"Starting server on port {available_port}")
+        print(f"API docs at: http://localhost:{available_port}/docs")
         uvicorn.run(app, host="0.0.0.0", port=available_port)
     else:
         print("❌ No available ports found in range 8000-8010")
