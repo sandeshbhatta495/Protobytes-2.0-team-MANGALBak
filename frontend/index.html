@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ne">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>सरकारी-सारथी - AI Digital Scribe for Local Government</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        
+        .glass-morphism {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+        
+        .step-indicator {
+            transition: all 0.3s ease;
+        }
+        
+        .step-indicator.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .input-method-card {
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .input-method-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        
+        .voice-recording {
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .nepali-font {
+            font-family: 'Poppins', sans-serif;
+            font-weight: 500;
+        }
+        
+        .canvas-container {
+            border: 2px dashed #cbd5e0;
+            border-radius: 10px;
+            background: #f7fafc;
+        }
+        
+        .required-field::after {
+            content: " *";
+            color: #e53e3e;
+        }
+        
+        .loading-spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl md:text-5xl font-bold text-white mb-2">
+                <i class="fas fa-landmark mr-3"></i>सरकारी-सारथी
+            </h1>
+            <p class="text-xl text-gray-200">AI Digital Scribe for Local Government (Nepal)</p>
+            <p class="text-lg text-gray-300 mt-2">काठमाडौं महानगरपालिका</p>
+        </header>
+
+        <!-- Main Content -->
+        <main class="glass-morphism p-8">
+            <!-- Step Indicators -->
+            <div class="flex justify-between mb-8">
+                <div class="step-indicator active px-4 py-2 rounded-full text-center" id="step1">
+                    <i class="fas fa-file-alt mr-2"></i>दस्तावेज छनोट
+                </div>
+                <div class="step-indicator px-4 py-2 rounded-full text-center bg-gray-200" id="step2">
+                    <i class="fas fa-keyboard mr-2"></i>जानकारी भर्नुहोस्
+                </div>
+                <div class="step-indicator px-4 py-2 rounded-full text-center bg-gray-200" id="step3">
+                    <i class="fas fa-check-circle mr-2"></i>पुष्टि गर्नुहोस्
+                </div>
+                <div class="step-indicator px-4 py-2 rounded-full text-center bg-gray-200" id="step4">
+                    <i class="fas fa-download mr-2"></i>PDF डाउनलोड
+                </div>
+            </div>
+
+            <!-- Step 1: Document Selection -->
+            <div id="documentSelection" class="step-content">
+                <h2 class="text-2xl font-bold mb-6 text-center nepali-font">
+                    <i class="fas fa-file-contract mr-2"></i>दस्तावेज प्रकार छनोट गर्नुहोस्
+                </h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <!-- Civil Registration -->
+                    <div class="bg-white p-6 rounded-lg shadow-lg">
+                        <h3 class="text-lg font-semibold mb-3 text-purple-700">
+                            <i class="fas fa-user-plus mr-2"></i>नागरिक दर्ता
+                        </h3>
+                        <div class="space-y-2">
+                            <button onclick="selectDocument('birth_registration')" class="w-full text-left p-3 rounded hover:bg-purple-50 transition">
+                                <i class="fas fa-baby mr-2"></i>जन्म दर्ता
+                            </button>
+                            <button onclick="selectDocument('death_registration')" class="w-full text-left p-3 rounded hover:bg-purple-50 transition">
+                                <i class="fas fa-cross mr-2"></i>मृत्यु दर्ता
+                            </button>
+                            <button onclick="selectDocument('marriage_registration')" class="w-full text-left p-3 rounded hover:bg-purple-50 transition">
+                                <i class="fas fa-heart mr-2"></i>विवाह दर्ता
+                            </button>
+                            <button onclick="selectDocument('divorce_registration')" class="w-full text-left p-3 rounded hover:bg-purple-50 transition">
+                                <i class="fas fa-file-signature mr-2"></i>सम्बन्धविच्छेद
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Recommendation Letters -->
+                    <div class="bg-white p-6 rounded-lg shadow-lg">
+                        <h3 class="text-lg font-semibold mb-3 text-blue-700">
+                            <i class="fas fa-certificate mr-2"></i>सिफारिस पत्र
+                        </h3>
+                        <div class="space-y-2">
+                            <button onclick="selectDocument('migration_certificate')" class="w-full text-left p-3 rounded hover:bg-blue-50 transition">
+                                <i class="fas fa-exchange-alt mr-2"></i>बसाइसराई प्रमाणपत्र
+                            </button>
+                            <button onclick="selectDocument('residence_certificate')" class="w-full text-left p-3 rounded hover:bg-blue-50 transition">
+                                <i class="fas fa-home mr-2"></i>बसोबास प्रमाणपत्र
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Infrastructure & Utilities -->
+                    <div class="bg-white p-6 rounded-lg shadow-lg">
+                        <h3 class="text-lg font-semibold mb-3 text-green-700">
+                            <i class="fas fa-tools mr-2"></i>पूर्वाधार र उपयोगिता
+                        </h3>
+                        <div class="space-y-2">
+                            <button onclick="selectDocument('electricity_connection')" class="w-full text-left p-3 rounded hover:bg-green-50 transition">
+                                <i class="fas fa-bolt mr-2"></i>विद्युत जडान
+                            </button>
+                            <button onclick="selectDocument('water_connection')" class="w-full text-left p-3 rounded hover:bg-green-50 transition">
+                                <i class="fas fa-tint mr-2"></i>खानेपानी जडान
+                            </button>
+                            <button onclick="selectDocument('road_access')" class="w-full text-left p-3 rounded hover:bg-green-50 transition">
+                                <i class="fas fa-road mr-2"></i>बाटो पहुँच
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 2: Input Methods -->
+            <div id="inputMethods" class="step-content hidden">
+                <h2 class="text-2xl font-bold mb-6 text-center nepali-font">
+                    <i class="fas fa-keyboard mr-2"></i>जानकारी भर्ने विधि छनोट गर्नुहोस्
+                </h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                    <!-- Voice Input -->
+                    <div onclick="selectInputMethod('voice')" class="input-method-card bg-white p-6 rounded-lg shadow-lg text-center">
+                        <div class="text-4xl mb-4 text-red-500">
+                            <i class="fas fa-microphone"></i>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-2">आवाजमा लेख्नुहोस्</h3>
+                        <p class="text-gray-600">माइक्रोफोनमा बोलेर जानकारी भर्नुहोस्</p>
+                    </div>
+
+                    <!-- Text Input -->
+                    <div onclick="selectInputMethod('text')" class="input-method-card bg-white p-6 rounded-lg shadow-lg text-center">
+                        <div class="text-4xl mb-4 text-blue-500">
+                            <i class="fas fa-keyboard"></i>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-2">किबोर्डमा टाइप गर्नुहोस्</h3>
+                        <p class="text-gray-600">किबोर्डबाट सीधै टाइप गर्नुहोस्</p>
+                    </div>
+
+                    <!-- Free Writing -->
+                    <div onclick="selectInputMethod('freehand')" class="input-method-card bg-white p-6 rounded-lg shadow-lg text-center">
+                        <div class="text-4xl mb-4 text-green-500">
+                            <i class="fas fa-pen"></i>
+                        </div>
+                        <h3 class="text-lg font-semibold mb-2">स्वतन्त्र लेखन</h3>
+                        <p class="text-gray-600">माउस वा टचबाट लेख्नुहोस्</p>
+                    </div>
+                </div>
+
+                <!-- Language Toggle -->
+                <div class="text-center mb-6">
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" id="languageToggle" class="form-checkbox h-5 w-5 text-purple-600">
+                        <span class="ml-2 text-gray-700">English to Nepali Translation</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Step 3: Form Input -->
+            <div id="formInput" class="step-content hidden">
+                <h2 class="text-2xl font-bold mb-6 text-center nepali-font">
+                    <i class="fas fa-edit mr-2"></i>आवश्यक जानकारी भर्नुहोस्
+                </h2>
+                
+                <!-- Voice Recording Interface -->
+                <div id="voiceInterface" class="hidden mb-6">
+                    <div class="bg-red-50 p-6 rounded-lg text-center">
+                        <button id="recordBtn" onclick="toggleRecording()" class="bg-red-500 text-white px-8 py-4 rounded-full text-lg hover:bg-red-600 transition">
+                            <i class="fas fa-microphone mr-2"></i>रेकर्डिङ सुरु गर्नुहोस्
+                        </button>
+                        <div id="recordingStatus" class="mt-4 text-gray-600"></div>
+                        <div id="transcriptionResult" class="mt-4 p-4 bg-white rounded-lg hidden"></div>
+                    </div>
+                </div>
+
+                <!-- Free Writing Canvas -->
+                <div id="freehandInterface" class="hidden mb-6">
+                    <div class="canvas-container p-4">
+                        <canvas id="drawingCanvas" width="800" height="400" class="w-full border rounded"></canvas>
+                        <div class="mt-4 flex justify-center space-x-4">
+                            <button onclick="clearCanvas()" class="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">
+                                <i class="fas fa-eraser mr-2"></i>मेटाउनुहोस्
+                            </button>
+                            <button onclick="recognizeHandwriting()" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">
+                                <i class="fas fa-check mr-2"></i>पहिचान गर्नुहोस्
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Text Form -->
+                <div id="textForm" class="bg-white p-6 rounded-lg">
+                    <form id="documentForm">
+                        <!-- Dynamic form fields will be inserted here -->
+                        <div id="formFields"></div>
+                        
+                        <div class="mt-6 flex justify-center">
+                            <button type="submit" class="bg-purple-600 text-white px-8 py-3 rounded-lg hover:bg-purple-700 transition">
+                                <i class="fas fa-arrow-right mr-2"></i>पुष्टि गर्नुहोस्
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Step 4: Preview & Download -->
+            <div id="previewDownload" class="step-content hidden">
+                <h2 class="text-2xl font-bold mb-6 text-center nepali-font">
+                    <i class="fas fa-file-pdf mr-2"></i>दस्तावेज पूर्वावलोकन र डाउनलोड
+                </h2>
+                
+                <div class="bg-white p-6 rounded-lg">
+                    <div id="documentPreview" class="mb-6"></div>
+                    
+                    <div class="flex justify-center space-x-4">
+                        <button onclick="generatePDF()" class="bg-green-600 text-white px-8 py-3 rounded-lg hover:bg-green-700 transition">
+                            <i class="fas fa-file-pdf mr-2"></i>PDF उत्पन्न गर्नुहोस्
+                        </button>
+                        <button onclick="downloadPDF()" class="bg-blue-600 text-white px-8 py-3 rounded-lg hover:bg-blue-700 transition hidden" id="downloadBtn">
+                            <i class="fas fa-download mr-2"></i>PDF डाउनलोड गर्नुहोस्
+                        </button>
+                        <button onclick="startNew()" class="bg-gray-600 text-white px-8 py-3 rounded-lg hover:bg-gray-700 transition">
+                            <i class="fas fa-plus mr-2"></i>नयाँ दस्तावेज
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Feedback Section -->
+                <div class="mt-8 bg-white p-6 rounded-lg">
+                    <h3 class="text-lg font-semibold mb-4">सेवाको गुणस्तर मूल्यांकन</h3>
+                    <div class="flex justify-center space-x-2 mb-4">
+                        <i class="fas fa-star text-2xl text-gray-300 cursor-pointer hover:text-yellow-400" onclick="rateService(1)"></i>
+                        <i class="fas fa-star text-2xl text-gray-300 cursor-pointer hover:text-yellow-400" onclick="rateService(2)"></i>
+                        <i class="fas fa-star text-2xl text-gray-300 cursor-pointer hover:text-yellow-400" onclick="rateService(3)"></i>
+                        <i class="fas fa-star text-2xl text-gray-300 cursor-pointer hover:text-yellow-400" onclick="rateService(4)"></i>
+                        <i class="fas fa-star text-2xl text-gray-300 cursor-pointer hover:text-yellow-400" onclick="rateService(5)"></i>
+                    </div>
+                    <textarea id="feedbackText" class="w-full p-3 border rounded-lg" rows="3" placeholder="सुझाव वा टिप्पणी..."></textarea>
+                    <button onclick="submitFeedback()" class="mt-2 bg-purple-600 text-white px-6 py-2 rounded hover:bg-purple-700">
+                        प्रतिक्रिया पठाउनुहोस्
+                    </button>
+                </div>
+            </div>
+        </main>
+
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
+            <div class="bg-white p-8 rounded-lg text-center">
+                <div class="loading-spinner mx-auto mb-4"></div>
+                <p class="text-lg">कृपया प्रतीक्षा गर्नुहोस्...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
