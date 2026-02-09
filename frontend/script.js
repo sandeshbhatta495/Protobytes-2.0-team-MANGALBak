@@ -197,7 +197,18 @@ async function loadLocationData() {
                             province_id: p['प्रदेश_आईडी'],
                             province_name: p['प्रदेश_नाम'],
                             districts: (p['जिल्लाहरू'] || []).map(function (d) {
-                                return { district_name: d['जिल्ला_नाम'] };
+                                // Parse municipalities from स्थानीय_तहहरू
+                                var municipalities = (d['स्थानीय_तहहरू'] || []).map(function (m) {
+                                    return {
+                                        name: m.name || m['नाम'],
+                                        type: m.type || m['प्रकार'],
+                                        wards: m.wards || m['वडा']
+                                    };
+                                });
+                                return { 
+                                    district_name: d['जिल्ला_नाम'],
+                                    municipalities: municipalities
+                                };
                             })
                         };
                     })
@@ -333,7 +344,16 @@ function createFieldElement(field, container) {
                     input.appendChild(optionElement);
                 });
             }
-            // else: options added by handleProvinceChange when user selects province
+            // Add change listener to populate municipalities
+            input.addEventListener('change', function (e) { handleDistrictChange(e, field.id); });
+        }
+        // Special handling for Municipality (स्थानीय तह / नगरपालिका) — populated when district is selected
+        else if (field.id.indexOf('municipality') !== -1 || field.id.indexOf('local_body') !== -1) {
+            // Will be populated by handleDistrictChange when user selects district
+            var infoOpt = document.createElement('option');
+            infoOpt.value = '';
+            infoOpt.textContent = 'पहिले जिल्ला छनोट गर्नुहोस्';
+            input.appendChild(infoOpt);
         }
         else if (field.options) {
             field.options.forEach(option => {
@@ -400,6 +420,64 @@ function handleProvinceChange(e, provinceFieldId) {
             districtSelect.appendChild(option);
         });
     }
+
+    // Also clear municipality dropdown if exists
+    var municipalityFieldId = provinceFieldId.replace('province', 'municipality');
+    var municipalitySelect = document.getElementById(municipalityFieldId);
+    if (municipalitySelect) {
+        municipalitySelect.innerHTML = '<option value="">पहिले जिल्ला छनोट गर्नुहोस्</option>';
+    }
+}
+
+// Handle district change to populate municipalities
+function handleDistrictChange(e, districtFieldId) {
+    var selectedDistrictName = e.target.value;
+    var municipalityFieldId = districtFieldId.replace('district', 'municipality');
+    var municipalitySelect = document.getElementById(municipalityFieldId);
+    
+    // Find province field id
+    var provinceFieldId = districtFieldId.replace('district', 'province');
+    var provinceSelect = document.getElementById(provinceFieldId);
+    var selectedProvinceName = provinceSelect ? provinceSelect.value : '';
+
+    if (!municipalitySelect) return;
+
+    // Clear municipality dropdown
+    municipalitySelect.innerHTML = '<option value="">छनोट गर्नुहोस्</option>';
+    municipalitySelect.value = '';
+
+    if (!selectedDistrictName || !selectedProvinceName || !locationData || !locationData.country || !locationData.country.provinces) {
+        return;
+    }
+
+    // Find the district data
+    var province = null;
+    for (var i = 0; i < locationData.country.provinces.length; i++) {
+        if (locationData.country.provinces[i].province_name === selectedProvinceName) {
+            province = locationData.country.provinces[i];
+            break;
+        }
+    }
+
+    if (!province || !province.districts) return;
+
+    var district = null;
+    for (var i = 0; i < province.districts.length; i++) {
+        if (province.districts[i].district_name === selectedDistrictName) {
+            district = province.districts[i];
+            break;
+        }
+    }
+
+    if (district && district.municipalities && district.municipalities.length > 0) {
+        district.municipalities.forEach(function (m) {
+            var option = document.createElement('option');
+            option.value = m.name;
+            option.textContent = m.name + (m.type ? ' (' + m.type + ')' : '');
+            if (m.wards) option.dataset.wards = m.wards;
+            municipalitySelect.appendChild(option);
+        });
+    }
 }
 
 // Input method selection
@@ -436,7 +514,20 @@ async function toggleRecording() {
 async function startRecording() {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
+        
+        // Pick best supported audio format for the browser
+        const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/mp4'];
+        let selectedMime = '';
+        for (const mime of mimeTypes) {
+            if (MediaRecorder.isTypeSupported(mime)) {
+                selectedMime = mime;
+                break;
+            }
+        }
+        console.log('Using audio MIME type:', selectedMime || 'browser default');
+        
+        const recorderOptions = selectedMime ? { mimeType: selectedMime } : {};
+        mediaRecorder = new MediaRecorder(stream, recorderOptions);
         audioChunks = [];
 
         mediaRecorder.ondataavailable = event => {
@@ -479,8 +570,11 @@ function stopRecording() {
 }
 
 async function handleRecordingStop() {
-    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-    const audioFile = new File([audioBlob], 'recording.wav', { type: 'audio/wav' });
+    const actualMime = mediaRecorder.mimeType || 'audio/webm';
+    const ext = actualMime.includes('ogg') ? 'ogg' : actualMime.includes('mp4') ? 'mp4' : 'webm';
+    const audioBlob = new Blob(audioChunks, { type: actualMime });
+    const audioFile = new File([audioBlob], `recording.${ext}`, { type: actualMime });
+    console.log('Sending audio:', audioFile.name, 'type:', actualMime, 'size:', audioBlob.size);
 
     try {
         const formData = new FormData();
@@ -588,11 +682,69 @@ function clearCanvas() {
     }
 }
 
-function recognizeHandwriting() {
-    // This is a placeholder for handwriting recognition
-    // In production, you would integrate with a handwriting recognition API
-    const recognizedText = "हस्ताक्षर पहिचान गरिएको पाठ (डेमो)";
-    fillFormFromTranscription(recognizedText);
+async function recognizeHandwriting() {
+    const canvas = document.getElementById('drawingCanvas');
+    if (!canvas) {
+        showError('क्यानभास फेला परेन।');
+        return;
+    }
+    
+    // Check if canvas has content
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const hasContent = imageData.data.some((pixel, i) => i % 4 !== 3 && pixel !== 0);
+    
+    if (!hasContent) {
+        showError('कृपया पहिले केही लेख्नुहोस्।');
+        return;
+    }
+
+    showLoading();
+    
+    try {
+        // Convert canvas to base64 image
+        const imageData64 = canvas.toDataURL('image/png');
+        
+        // Send to backend for recognition
+        const response = await fetch(`${API_BASE}/recognize-handwriting`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ image: imageData64 })
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.text) {
+            displayRecognizedText(result.text);
+            fillFormFromTranscription(result.text);
+        } else {
+            throw new Error(result.detail || 'Recognition failed');
+        }
+    } catch (error) {
+        console.error('Error recognizing handwriting:', error);
+        // Fallback: show form for manual entry
+        showError('हस्तलेख पहिचान गर्न सकेन। कृपया म्यानुअल रूपमा टाइप गर्नुहोस्।');
+        
+        var freehandEl = document.getElementById('freehandInterface');
+        var textFormEl = document.getElementById('textForm');
+        if (freehandEl) freehandEl.classList.add('hidden');
+        if (textFormEl) textFormEl.classList.remove('hidden');
+    } finally {
+        hideLoading();
+    }
+}
+
+function displayRecognizedText(text) {
+    // Show the recognized text and switch to form view
+    var freehandEl = document.getElementById('freehandInterface');
+    var textFormEl = document.getElementById('textForm');
+    
+    if (freehandEl) freehandEl.classList.add('hidden');
+    if (textFormEl) textFormEl.classList.remove('hidden');
+    
+    showSuccess('पहिचानिएको पाठ: ' + text);
 }
 
 // Form handling
@@ -721,14 +873,30 @@ function downloadPDF(pdfPath) {
 
 function showDocumentPreview(content) {
     const previewDiv = document.getElementById('documentPreview');
-    previewDiv.innerHTML = `
-        <div class="bg-gray-50 p-6 rounded-lg">
-            <h3 class="text-lg font-semibold mb-4">दस्तावेज पूर्वावलोकन</h3>
-            <div class="bg-white p-4 rounded border">
-                <pre class="whitespace-pre-wrap text-sm">${content}</pre>
+    
+    // If content is an object (form data before generation), format it nicely
+    if (typeof content === 'object' && content !== null) {
+        let html = '<div class="bg-gray-50 p-6 rounded-lg"><h3 class="text-lg font-semibold mb-4">\u0926\u0938\u094d\u0924\u093e\u0935\u0947\u091c \u092a\u0942\u0930\u094d\u0935\u093e\u0935\u0932\u094b\u0915\u0928</h3><div class="bg-white p-4 rounded border">';
+        html += '<table class="w-full text-sm">';
+        for (const [key, value] of Object.entries(content)) {
+            if (value) {
+                html += `<tr class="border-b"><td class="py-2 pr-4 font-medium text-gray-600">${key}</td><td class="py-2">${value}</td></tr>`;
+            }
+        }
+        html += '</table></div></div>';
+        previewDiv.innerHTML = html;
+    } else {
+        // Content is text (from server response)
+        const sanitized = String(content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        previewDiv.innerHTML = `
+            <div class="bg-gray-50 p-6 rounded-lg">
+                <h3 class="text-lg font-semibold mb-4">\u0926\u0938\u094d\u0924\u093e\u0935\u0947\u091c \u092a\u0942\u0930\u094d\u0935\u093e\u0935\u0932\u094b\u0915\u0928</h3>
+                <div class="bg-white p-4 rounded border" style="font-family: 'Poppins', sans-serif; line-height: 1.8;">
+                    <pre class="whitespace-pre-wrap text-sm">${sanitized}</pre>
+                </div>
             </div>
-        </div>
-    `;
+        `;
+    }
 }
 
 // Utility functions

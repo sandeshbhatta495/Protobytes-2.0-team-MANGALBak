@@ -4,6 +4,15 @@ Optimized to use HuggingFace pipeline chunking for long audio.
 """
 import sys
 import os
+
+# Configure FFmpeg path from imageio_ffmpeg before importing audio libraries
+try:
+    import imageio_ffmpeg
+    ffmpeg_path = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+    os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ.get("PATH", "")
+except ImportError:
+    pass  # FFmpeg should be in system PATH
+
 import textwrap
 import numpy as np
 from transformers import pipeline

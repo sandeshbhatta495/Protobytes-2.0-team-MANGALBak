@@ -49,7 +49,7 @@
     {
       "id": "municipality",
       "label": "नगरपालिका/गाउँपालिका",
-      "type": "text",
+      "type": "select",
       "required": true
     },
     {
