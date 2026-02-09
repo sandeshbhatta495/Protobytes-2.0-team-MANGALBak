@@ -315,5 +315,16 @@
     </div>
 
     <script src="script.js"></script>
+    <script>
+        // Ensure app is usable: expose key functions if script loaded
+        (function checkAppReady() {
+            if (typeof selectDocument !== 'function') {
+                document.body.innerHTML = '<div style="padding:2rem;text-align:center;color:#c00;">' +
+                    '<p><strong>स्क्रिप्ट लोड भएन।</strong></p>' +
+                    '<p>कृपया यो पृष्ठ सर्भरबाट खोल्नुहोस्: <a href="/">http://localhost:8000</a></p>' +
+                    '<p>सर्भर चलाउनुहोस्: <code>backend</code> फोल्डरमा <code>python startup.py</code></p></div>';
+            }
+        })();
+    </script>
 </body>
 </html>

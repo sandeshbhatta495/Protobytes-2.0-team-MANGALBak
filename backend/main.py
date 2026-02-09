@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 import uvicorn
 import os
 from dotenv import load_dotenv
@@ -63,7 +63,10 @@ else:
     os.makedirs(static_dir, exist_ok=True)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Frontend is served via routes below (/, /index.html, /script.js)
+# Serve entire frontend folder at /app so index.html and script.js load reliably
+if os.path.exists(FRONTEND_DIR):
+    app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    logger.info(f"Frontend mounted at /app from {FRONTEND_DIR}")
 
 # Global variables
 whisper_model = None
@@ -136,29 +139,10 @@ async def startup_event():
 
 @app.get("/")
 async def root():
-    """Serve the frontend app so the website opens in the browser."""
-    index_path = os.path.join(FRONTEND_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path, media_type="text/html")
+    """Redirect to the frontend app so the website and assets load correctly."""
+    if os.path.exists(FRONTEND_DIR):
+        return RedirectResponse(url="/app/", status_code=302)
     return {"message": "Sarkari-Sarathi API is running"}
-
-
-@app.get("/index.html")
-async def serve_index():
-    """Serve index.html for direct or refreshed requests."""
-    index_path = os.path.join(FRONTEND_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path, media_type="text/html")
-    raise HTTPException(status_code=404, detail="Not found")
-
-
-@app.get("/script.js")
-async def serve_script():
-    """Serve frontend script."""
-    script_path = os.path.join(FRONTEND_DIR, "script.js")
-    if os.path.exists(script_path):
-        return FileResponse(script_path, media_type="application/javascript")
-    raise HTTPException(status_code=404, detail="Not found")
 
 @app.post("/transcribe-audio")
 async def transcribe_audio(audio: UploadFile = File(...)):
