@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>सरकारी-सारथी - AI Digital Scribe for Local Government</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -80,17 +81,60 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        
+        /* Municipality / select dropdown scrolling */
+        select {
+            max-height: 200px;
+            overflow-y: auto;
+            appearance: auto;
+            -webkit-appearance: auto;
+            -moz-appearance: auto;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M6 8L1 3h10z' fill='%23666'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 2.5rem;
+        }
+        
+        select option {
+            padding: 8px 12px;
+        }
+        
+        /* Searchable dropdown styling */
+        .select-wrapper {
+            position: relative;
+        }
+        
+        .select-wrapper select:focus {
+            outline: none;
+            ring: 2px;
+            ring-color: #7c3aed;
+            border-color: #7c3aed;
+        }
+        
+        /* Profile icon */
+        .profile-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.6);
+            object-fit: cover;
+        }
     </style>
 </head>
 <body>
     <div class="container mx-auto px-4 py-8 max-w-6xl">
         <!-- Header -->
-        <header class="text-center mb-8">
+        <header class="text-center mb-8 relative">
+            <div class="absolute right-0 top-0">
+                <img src="/favicon.ico" alt="Profile" class="profile-icon" onerror="this.style.display='none'">
+            </div>
             <h1 class="text-4xl md:text-5xl font-bold text-white mb-2">
                 <i class="fas fa-landmark mr-3"></i>सरकारी-सारथी
             </h1>
             <p class="text-xl text-gray-200">AI Digital Scribe for Local Government (Nepal)</p>
-            <p class="text-lg text-gray-300 mt-2">काठमाडौं महानगरपालिका</p>
+            <p class="text-lg text-gray-300 mt-2">
+                <i class="fas fa-flag mr-1"></i>नेपाल सरकार - स्थानीय तह सेवा
+            </p>
         </header>
 
         <!-- Main Content -->
