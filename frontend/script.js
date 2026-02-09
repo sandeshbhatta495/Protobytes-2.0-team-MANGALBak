@@ -7,18 +7,28 @@ let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 
-// API base URL: use same origin when served by backend; fallback for file:// or when origin is invalid
+// API base URL: backend runs on 8000. Use same origin only when page is served from backend (/app/); otherwise call backend on 8000
 function getApiBase() {
-    const o = window.location.origin;
-    if (o && (o.startsWith('http://') || o.startsWith('https://'))) return o;
-    return 'http://localhost:8000';
+    var o = window.location.origin;
+    var path = window.location.pathname || '';
+    // When opened from Live Server (e.g. .../frontend/index.html) or any URL other than /app/, use backend port 8000
+    if (path.indexOf('/app/') === 0 || path === '/app' || path === '/') {
+        return o; // Same origin (backend serving the app)
+    }
+    // Different server (e.g. port 5500) or file:// - point to backend
+    var host = window.location.hostname || 'localhost';
+    return (o && o.indexOf('https') === 0 ? 'https' : 'http') + '://' + host + ':8000';
 }
 const API_BASE = getApiBase();
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function () {
-    loadInitialData();
-    setupEventListeners();
+    try {
+        loadInitialData();
+        setupEventListeners();
+    } catch (err) {
+        console.error('App init error:', err);
+    }
 });
 
 // Setup event listeners
@@ -117,10 +127,12 @@ async function loadDocumentTemplate(documentType) {
             throw new Error(msg);
         }
 
-        const template = await response.json();
+        var template = await response.json();
         console.log('Template loaded:', template);
 
         if (template.form_fields && Array.isArray(template.form_fields)) {
+            // Ensure province/district data is loaded before building form
+            await ensureLocationData();
             generateFormFields(template.form_fields);
         } else {
             throw new Error('Invalid template format: missing form_fields');
@@ -132,54 +144,121 @@ async function loadDocumentTemplate(documentType) {
 }
 
 // Global location data
-let locationData = null;
+var locationData = null;
+var locationDataPromise = null;
+
+// Fallback: all 7 provinces and their districts (used when API fails). Ward numbers are 1–33 by convention; user types them.
+var NEPAL_LOCATIONS_FALLBACK = {
+    country: {
+        provinces: [
+            { province_id: 1, province_name: 'कोशी प्रदेश', districts: [{ district_name: 'भोजपुर' }, { district_name: 'धनकुटा' }, { district_name: 'इलाम' }, { district_name: 'झापा' }, { district_name: 'खोटाङ' }, { district_name: 'मोरङ' }, { district_name: 'ओखलढुंगा' }, { district_name: 'पाँचथर' }, { district_name: 'संखुवासभा' }, { district_name: 'सोलुखुम्बु' }, { district_name: 'सुनसरी' }, { district_name: 'ताप्लेजुङ' }, { district_name: 'तेह्रथुम' }, { district_name: 'उदयपुर' }] },
+            { province_id: 2, province_name: 'मधेश प्रदेश', districts: [{ district_name: 'बारा' }, { district_name: 'धनुषा' }, { district_name: 'महोत्तरी' }, { district_name: 'पर्सा' }, { district_name: 'रौतहट' }, { district_name: 'सप्तरी' }, { district_name: 'सर्लाही' }, { district_name: 'सिरहा' }] },
+            { province_id: 3, province_name: 'बागमती प्रदेश', districts: [{ district_name: 'भक्तपुर' }, { district_name: 'चितवन' }, { district_name: 'धादिङ' }, { district_name: 'दोलखा' }, { district_name: 'काठमाडौं' }, { district_name: 'काभ्रेपलाञ्चोक' }, { district_name: 'ललितपुर' }, { district_name: 'मकवानपुर' }, { district_name: 'नुवाकोट' }, { district_name: 'रामेछाप' }, { district_name: 'रसुवा' }, { district_name: 'सिन्धुली' }, { district_name: 'सिन्धुपाल्चोक' }] },
+            { province_id: 4, province_name: 'गण्डकी प्रदेश', districts: [{ district_name: 'बागलुङ' }, { district_name: 'गोरखा' }, { district_name: 'कास्की' }, { district_name: 'लमजुङ' }, { district_name: 'मनाङ' }, { district_name: 'मुस्ताङ' }, { district_name: 'म्याग्दी' }, { district_name: 'नवलपुर' }, { district_name: 'पर्वत' }, { district_name: 'स्याङ्जा' }, { district_name: 'तनहुँ' }] },
+            { province_id: 5, province_name: 'लुम्बिनी प्रदेश', districts: [{ district_name: 'अर्घाखाँची' }, { district_name: 'बाँके' }, { district_name: 'बर्दिया' }, { district_name: 'दाङ' }, { district_name: 'गुल्मी' }, { district_name: 'कपिलवस्तु' }, { district_name: 'पाल्पा' }, { district_name: 'परासी' }, { district_name: 'प्यूठान' }, { district_name: 'रोल्पा' }, { district_name: 'रुपन्देही' }, { district_name: 'पूर्वी रुकुम' }] },
+            { province_id: 6, province_name: 'कर्णाली प्रदेश', districts: [{ district_name: 'दैलेख' }, { district_name: 'डोल्पा' }, { district_name: 'हुम्ला' }, { district_name: 'जाजरकोट' }, { district_name: 'जुम्ला' }, { district_name: 'कालिकोट' }, { district_name: 'मुगु' }, { district_name: 'सल्यान' }, { district_name: 'सुर्खेत' }, { district_name: 'पश्चिम रुकुम' }] },
+            { province_id: 7, province_name: 'सुदूरपश्चिम प्रदेश', districts: [{ district_name: 'अछाम' }, { district_name: 'बैतडी' }, { district_name: 'बझाङ' }, { district_name: 'बाजुरा' }, { district_name: 'डडेल्धुरा' }, { district_name: 'दार्चुला' }, { district_name: 'डोटी' }, { district_name: 'कैलाली' }, { district_name: 'कञ्चनपुर' }] }
+        ]
+    }
+};
 
 // Load document types and location data
 async function loadInitialData() {
     await Promise.all([loadDocumentTypes(), loadLocationData()]);
 }
 
-// Load location data from API
+// Ensure location data is ready (wait for it if still loading). Call this before generating form with province/district.
+function ensureLocationData() {
+    if (locationData && locationData.country && locationData.country.provinces && locationData.country.provinces.length > 0) {
+        return Promise.resolve();
+    }
+    if (!locationDataPromise) {
+        locationDataPromise = loadLocationData();
+    }
+    return locationDataPromise;
+}
+
+// Load location data from API (supports both Nepali keys and English shape). Uses fallback if API fails.
 async function loadLocationData() {
     try {
-        const response = await fetch(`${API_BASE}/locations`);
-        const data = await response.json();
-        locationData = data;
-        console.log('Location data loaded:', data);
+        var response = await fetch(API_BASE + '/locations');
+        if (!response.ok) {
+            console.warn('Locations API returned', response.status, '- using built-in list');
+            locationData = NEPAL_LOCATIONS_FALLBACK;
+            return;
+        }
+        var data = await response.json();
+        if (data && data['देश'] && data['देश']['प्रदेशहरू']) {
+            var raw = data['देश'];
+            locationData = {
+                country: {
+                    provinces: (raw['प्रदेशहरू'] || []).map(function (p) {
+                        return {
+                            province_id: p['प्रदेश_आईडी'],
+                            province_name: p['प्रदेश_नाम'],
+                            districts: (p['जिल्लाहरू'] || []).map(function (d) {
+                                return { district_name: d['जिल्ला_नाम'] };
+                            })
+                        };
+                    })
+                }
+            };
+        } else if (data && data.country && data.country.provinces) {
+            locationData = data;
+        } else {
+            locationData = NEPAL_LOCATIONS_FALLBACK;
+        }
+        if (!locationData.country || !locationData.country.provinces || locationData.country.provinces.length === 0) {
+            locationData = NEPAL_LOCATIONS_FALLBACK;
+        }
+        console.log('Location data loaded, provinces:', locationData.country.provinces.length);
     } catch (error) {
-        console.error('Error loading location data:', error);
+        console.error('Error loading location data:', error, '- using built-in list');
+        locationData = NEPAL_LOCATIONS_FALLBACK;
     }
 }
 
 // Generate form fields dynamically
 function generateFormFields(fields) {
-    const formFieldsContainer = document.getElementById('formFields');
+    var formFieldsContainer = document.getElementById('formFields');
+    if (!formFieldsContainer) return;
     formFieldsContainer.innerHTML = '';
+    if (!Array.isArray(fields) || fields.length === 0) return;
 
+    try {
+        generateFormFieldsInner(fields, formFieldsContainer);
+    } catch (err) {
+        console.error('Error generating form fields:', err);
+        formFieldsContainer.innerHTML = '<p class="text-red-600">फारम लोड गर्दा त्रुटि। कृपया पृष्ठ रिफ्रेस गर्नुहोस्।</p>';
+    }
+}
+
+function generateFormFieldsInner(fields, formFieldsContainer) {
     // Check if we have address fields to group
     const addressFields = fields.filter(f => f.id.includes('address') || f.id.includes('province') || f.id.includes('district') || f.id.includes('municipality') || f.id.includes('ward'));
     const otherFields = fields.filter(f => !addressFields.includes(f));
 
     // Render other fields first
-    otherFields.forEach(field => createFieldElement(field, formFieldsContainer));
+    otherFields.forEach(function (field) { createFieldElement(field, formFieldsContainer); });
 
-    // Render address fields (custom logic for permanent/temporary)
-    // Render address fields (custom logic for permanent/temporary)
+    // Render address fields
     if (addressFields.length > 0) {
-        // Group by type if possible, or just render
-        addressFields.forEach(field => createFieldElement(field, formFieldsContainer));
+        addressFields.forEach(function (field) { createFieldElement(field, formFieldsContainer); });
 
-        // Add "Same as Permanent" button if we have both sets of addresses
-        const hasPermanent = addressFields.some(f => f.id.includes('permanent') || f.id.includes('old'));
-        const hasTemporary = addressFields.some(f => f.id.includes('temporary') || f.id.includes('new'));
+        var hasPermanent = addressFields.some(function (f) { return f.id.indexOf('permanent') !== -1 || f.id.indexOf('old') !== -1; });
+        var hasTemporary = addressFields.some(function (f) { return f.id.indexOf('temporary') !== -1 || f.id.indexOf('new') !== -1; });
 
         if (hasPermanent && hasTemporary) {
-            const copyBtn = document.createElement('button');
+            var copyBtn = document.createElement('button');
             copyBtn.type = 'button';
             copyBtn.className = 'mt-2 mb-4 bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 transition text-sm';
             copyBtn.innerHTML = '<i class="fas fa-copy mr-2"></i>स्थायी ठेगाना नै राख्नुहोस्';
             copyBtn.onclick = copyPermanentToTemporary;
-            formFieldsContainer.insertBefore(copyBtn, formFieldsContainer.lastElementChild); // Insert before last field or appropriately
+            if (formFieldsContainer.lastElementChild) {
+                formFieldsContainer.insertBefore(copyBtn, formFieldsContainer.lastElementChild);
+            } else {
+                formFieldsContainer.appendChild(copyBtn);
+            }
         }
     }
 }
@@ -226,30 +305,35 @@ function createFieldElement(field, container) {
         defaultOption.textContent = 'छनोट गर्नुहोस्';
         input.appendChild(defaultOption);
 
-        // Special handling for Province
-        if (field.id.includes('province') && locationData && locationData.country && locationData.country.provinces) {
-            locationData.country.provinces.forEach(p => {
-                const option = document.createElement('option');
-                option.value = p.province_name;
-                option.textContent = p.province_name;
-                option.dataset.id = p.province_id;
-                input.appendChild(option);
-            });
-
-            // Add change listener to populate district
-            input.addEventListener('change', (e) => handleProvinceChange(e, field.id));
+        // Special handling for Province (प्रदेश)
+        if (field.id.indexOf('province') !== -1) {
+            if (locationData && locationData.country && locationData.country.provinces && locationData.country.provinces.length > 0) {
+                locationData.country.provinces.forEach(function (p) {
+                    var option = document.createElement('option');
+                    option.value = p.province_name;
+                    option.textContent = p.province_name;
+                    if (p.province_id != null) option.dataset.id = p.province_id;
+                    input.appendChild(option);
+                });
+            } else {
+                var emptyOpt = document.createElement('option');
+                emptyOpt.value = '';
+                emptyOpt.textContent = '— प्रदेश लोड भएन (सर्भर जाँच गर्नुहोस्) —';
+                input.appendChild(emptyOpt);
+            }
+            input.addEventListener('change', function (e) { handleProvinceChange(e, field.id); });
         }
-        // Special handling for District (initially empty or static options if provided)
-        else if (field.id.includes('district')) {
-            // Districts will be populated by province change
-            if (field.options) {
-                field.options.forEach(option => {
-                    const optionElement = document.createElement('option');
-                    optionElement.value = option;
-                    optionElement.textContent = option;
+        // Special handling for District (जिल्ला) — populated when province is selected
+        else if (field.id.indexOf('district') !== -1) {
+            if (field.options && field.options.length > 0) {
+                field.options.forEach(function (opt) {
+                    var optionElement = document.createElement('option');
+                    optionElement.value = opt;
+                    optionElement.textContent = opt;
                     input.appendChild(optionElement);
                 });
             }
+            // else: options added by handleProvinceChange when user selects province
         }
         else if (field.options) {
             field.options.forEach(option => {
@@ -286,42 +370,35 @@ function createFieldElement(field, container) {
 }
 
 function handleProvinceChange(e, provinceFieldId) {
-    console.log('handleProvinceChange called for:', provinceFieldId);
-    const selectedProvinceName = e.target.value;
-    console.log('Selected Province:', selectedProvinceName);
+    var selectedProvinceName = e.target.value;
+    var districtFieldId = provinceFieldId.replace('province', 'district');
+    var districtSelect = document.getElementById(districtFieldId);
 
-    const districtFieldId = provinceFieldId.replace('province', 'district');
-    console.log('Derived District Field ID:', districtFieldId);
+    if (!districtSelect) return;
 
-    const districtSelect = document.getElementById(districtFieldId);
-    console.log('District Select Element found:', !!districtSelect);
-
-    if (!districtSelect) {
-        console.error('District select element not found with ID:', districtFieldId);
-        return;
-    }
-
-    if (!locationData) {
-        console.error('Location data is missing!');
-        return;
-    }
-
-    // Clear current options
+    // Clear district dropdown and show default
     districtSelect.innerHTML = '<option value="">छनोट गर्नुहोस्</option>';
+    districtSelect.value = '';
 
-    const province = locationData.country.provinces.find(p => p.province_name === selectedProvinceName);
-    console.log('Found Province Data:', province);
+    if (!selectedProvinceName || !locationData || !locationData.country || !locationData.country.provinces) {
+        return;
+    }
 
-    if (province && province.districts) {
-        province.districts.forEach(d => {
-            const option = document.createElement('option');
+    var province = null;
+    for (var i = 0; i < locationData.country.provinces.length; i++) {
+        if (locationData.country.provinces[i].province_name === selectedProvinceName) {
+            province = locationData.country.provinces[i];
+            break;
+        }
+    }
+
+    if (province && province.districts && province.districts.length > 0) {
+        province.districts.forEach(function (d) {
+            var option = document.createElement('option');
             option.value = d.district_name;
             option.textContent = d.district_name;
             districtSelect.appendChild(option);
         });
-        console.log(`Populated ${province.districts.length} districts.`);
-    } else {
-        console.warn('Province not found or has no districts in locationData');
     }
 }
 
@@ -329,18 +406,19 @@ function handleProvinceChange(e, provinceFieldId) {
 function selectInputMethod(method) {
     selectedInputMethod = method;
 
-    // Hide all interfaces
-    document.getElementById('voiceInterface').classList.add('hidden');
-    document.getElementById('freehandInterface').classList.add('hidden');
-    document.getElementById('textForm').classList.add('hidden');
+    var voiceEl = document.getElementById('voiceInterface');
+    var freehandEl = document.getElementById('freehandInterface');
+    var textFormEl = document.getElementById('textForm');
+    if (voiceEl) voiceEl.classList.add('hidden');
+    if (freehandEl) freehandEl.classList.add('hidden');
+    if (textFormEl) textFormEl.classList.add('hidden');
 
-    // Show selected interface
-    if (method === 'voice') {
-        document.getElementById('voiceInterface').classList.remove('hidden');
-    } else if (method === 'freehand') {
-        document.getElementById('freehandInterface').classList.remove('hidden');
-    } else {
-        document.getElementById('textForm').classList.remove('hidden');
+    if (method === 'voice' && voiceEl) {
+        voiceEl.classList.remove('hidden');
+    } else if (method === 'freehand' && freehandEl) {
+        freehandEl.classList.remove('hidden');
+    } else if (textFormEl) {
+        textFormEl.classList.remove('hidden');
     }
 
     goToStep(3);
@@ -370,12 +448,13 @@ async function startRecording() {
         mediaRecorder.start();
         isRecording = true;
 
-        // Update UI
-        const recordBtn = document.getElementById('recordBtn');
-        recordBtn.innerHTML = '<i class="fas fa-stop mr-2"></i>रेकर्डिङ बन्द गर्नुहोस्';
-        recordBtn.classList.add('voice-recording');
-
-        document.getElementById('recordingStatus').textContent = 'रेकर्डिङ भइरहेको छ...';
+        var recordBtn = document.getElementById('recordBtn');
+        var statusEl = document.getElementById('recordingStatus');
+        if (recordBtn) {
+            recordBtn.innerHTML = '<i class="fas fa-stop mr-2"></i>रेकर्डिङ बन्द गर्नुहोस्';
+            recordBtn.classList.add('voice-recording');
+        }
+        if (statusEl) statusEl.textContent = 'रेकर्डिङ भइरहेको छ...';
 
     } catch (error) {
         console.error('Error starting recording:', error);
@@ -389,12 +468,13 @@ function stopRecording() {
         mediaRecorder.stream.getTracks().forEach(track => track.stop());
         isRecording = false;
 
-        // Update UI
-        const recordBtn = document.getElementById('recordBtn');
-        recordBtn.innerHTML = '<i class="fas fa-microphone mr-2"></i>रेकर्डिङ सुरु गर्नुहोस्';
-        recordBtn.classList.remove('voice-recording');
-
-        document.getElementById('recordingStatus').textContent = 'रेकर्डिङ पूरा भयो। प्रक्रिया गरिँदैछ...';
+        var recordBtn = document.getElementById('recordBtn');
+        var statusEl = document.getElementById('recordingStatus');
+        if (recordBtn) {
+            recordBtn.innerHTML = '<i class="fas fa-microphone mr-2"></i>रेकर्डिङ सुरु गर्नुहोस्';
+            recordBtn.classList.remove('voice-recording');
+        }
+        if (statusEl) statusEl.textContent = 'रेकर्डिङ पूरा भयो। प्रक्रिया गरिँदैछ...';
     }
 }
 
@@ -426,11 +506,13 @@ async function handleRecordingStop() {
 }
 
 function displayTranscription(text) {
-    const resultDiv = document.getElementById('transcriptionResult');
-    resultDiv.textContent = `पहिचानिएको पाठ: ${text}`;
-    resultDiv.classList.remove('hidden');
-
-    document.getElementById('recordingStatus').textContent = 'ट्रान्स्क्रिप्सन सफल!';
+    var resultDiv = document.getElementById('transcriptionResult');
+    var statusEl = document.getElementById('recordingStatus');
+    if (resultDiv) {
+        resultDiv.textContent = 'पहिचानिएको पाठ: ' + text;
+        resultDiv.classList.remove('hidden');
+    }
+    if (statusEl) statusEl.textContent = 'ट्रान्स्क्रिप्सन सफल!';
 }
 
 // Freehand writing functions
@@ -651,11 +733,13 @@ function showDocumentPreview(content) {
 
 // Utility functions
 function showLoading() {
-    document.getElementById('loadingOverlay').classList.remove('hidden');
+    var el = document.getElementById('loadingOverlay');
+    if (el) el.classList.remove('hidden');
 }
 
 function hideLoading() {
-    document.getElementById('loadingOverlay').classList.add('hidden');
+    var el = document.getElementById('loadingOverlay');
+    if (el) el.classList.add('hidden');
 }
 
 function showError(message) {
@@ -696,18 +780,16 @@ function submitFeedback() {
 
 // Start new document
 function startNew() {
-    // Reset all variables
     selectedDocument = null;
     selectedInputMethod = null;
     formData = {};
 
-    // Reset form
-    document.getElementById('documentForm').reset();
+    var form = document.getElementById('documentForm');
+    if (form) form.reset();
 
-    // Hide download button
-    document.getElementById('downloadBtn').classList.add('hidden');
+    var downloadBtn = document.getElementById('downloadBtn');
+    if (downloadBtn) downloadBtn.classList.add('hidden');
 
-    // Go to first step
     goToStep(1);
 }
 
@@ -716,9 +798,10 @@ function fillFormFromTranscription(text) {
     // This is a very basic implementation
     // In production, you would use NLP to extract specific information
 
-    // Show text form for manual editing
-    document.getElementById('voiceInterface').classList.add('hidden');
-    document.getElementById('textForm').classList.remove('hidden');
+    var voiceEl = document.getElementById('voiceInterface');
+    var textFormEl = document.getElementById('textForm');
+    if (voiceEl) voiceEl.classList.add('hidden');
+    if (textFormEl) textFormEl.classList.remove('hidden');
 
     // Try to auto-fill some fields based on keywords
     const lowerText = text.toLowerCase();
@@ -733,8 +816,8 @@ function fillFormFromTranscription(text) {
         }
     }
 
-    // Show the transcribed text for reference
-    const transcriptionResult = document.getElementById('transcriptionResult');
+    var transcriptionResult = document.getElementById('transcriptionResult');
+    if (!transcriptionResult) return;
     transcriptionResult.innerHTML = `
         <div class="mb-4">
             <strong>पहिचानिएको पाठ:</strong>
@@ -756,3 +839,15 @@ function handleLanguageToggle(e) {
         console.log('English to Nepali translation disabled');
     }
 }
+
+// Expose all handlers used by HTML onclick so they work in every environment
+window.selectDocument = selectDocument;
+window.selectInputMethod = selectInputMethod;
+window.toggleRecording = toggleRecording;
+window.clearCanvas = clearCanvas;
+window.recognizeHandwriting = recognizeHandwriting;
+window.generatePDF = generatePDF;
+window.downloadPDF = downloadPDF;
+window.startNew = startNew;
+window.rateService = rateService;
+window.submitFeedback = submitFeedback;
