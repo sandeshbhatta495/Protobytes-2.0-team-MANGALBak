@@ -1,52 +1,265 @@
-// Global variables
+// =====================================================
+//  SARKARI-SARATHI — FIELD-CENTRIC INPUT ARCHITECTURE
+//  Every form field has a single internal state.
+//  All input methods (keyboard, voice, handwriting)
+//  write to that same state → always Nepali output.
+// =====================================================
+
+// ===== GLOBAL VARIABLES =====
 let currentStep = 1;
 let selectedDocument = null;
-let selectedInputMethod = null;
+let selectedInputMethod = 'text';
 let formData = {};
-let mediaRecorder = null;
-let audioChunks = [];
-let isRecording = false;
 
-// API base URL: backend runs on 8000. Use same origin only when page is served from backend (/app/); otherwise call backend on 8000
+// Field-centric state store
+const fieldStates = {};
+
+// Modal canvas state
+let activeCanvasFieldId = null;
+let isModalDrawing = false;
+let modalLastX = 0;
+let modalLastY = 0;
+
+// ===== API BASE URL =====
 function getApiBase() {
     var o = window.location.origin;
     var path = window.location.pathname || '';
-    // When opened from Live Server (e.g. .../frontend/index.html) or any URL other than /app/, use backend port 8000
     if (path.indexOf('/app/') === 0 || path === '/app' || path === '/') {
-        return o; // Same origin (backend serving the app)
+        return o;
     }
-    // Different server (e.g. port 5500) or file:// - point to backend
     var host = window.location.hostname || 'localhost';
     return (o && o.indexOf('https') === 0 ? 'https' : 'http') + '://' + host + ':8000';
 }
 const API_BASE = getApiBase();
 
-// Initialize the application
+// =====================================================
+//  FIELD STATE CLASS
+//  Central state for each form field. All input modes
+//  (typing, voice, writing) funnel through setValue().
+// =====================================================
+class FieldState {
+    constructor(fieldId, element, label) {
+        this.fieldId = fieldId;
+        this.element = element;
+        this.label = label || fieldId;
+        this.value = '';
+        this.activeInputMode = 'typing'; // typing | voice | writing
+        // Per-field voice recording state
+        this.isRecording = false;
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        // Transliteration buffer (current English word being composed)
+        this.translitBuffer = '';
+    }
+
+    /** Set the field value from any source and sync to DOM */
+    setValue(newValue, source) {
+        this.value = newValue;
+        if (this.element) {
+            this.element.value = newValue;
+            this.element.dispatchEvent(new Event('change', { bubbles: true }));
+            this.element.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        console.log(`[FieldState] ${this.fieldId} = "${newValue}" (source: ${source || 'unknown'})`);
+    }
+
+    /** Append text (e.g. from voice transcription) */
+    appendValue(text, source) {
+        const sep = this.value ? ' ' : '';
+        this.setValue(this.value + sep + text, source);
+    }
+
+    /** Read current value from DOM (sync back) */
+    getValue() {
+        if (this.element) this.value = this.element.value;
+        return this.value;
+    }
+}
+
+function getOrCreateFieldState(fieldId, element, label) {
+    if (!fieldStates[fieldId]) {
+        fieldStates[fieldId] = new FieldState(fieldId, element, label);
+    } else if (element) {
+        fieldStates[fieldId].element = element;
+        if (label) fieldStates[fieldId].label = label;
+    }
+    return fieldStates[fieldId];
+}
+
+// =====================================================
+//  CLIENT-SIDE TRANSLITERATION (English → Nepali)
+// =====================================================
+const TRANSLIT_MULTI = {
+    'shri': 'श्री', 'shr': 'श्र', 'ksh': 'क्ष', 'tra': 'त्र', 'gya': 'ज्ञ',
+    'chh': 'छ', 'thh': 'ठ', 'dhh': 'ढ', 'shh': 'ष',
+    'kha': 'खा', 'gha': 'घा', 'cha': 'चा', 'chha': 'छा',
+    'jha': 'झा', 'tha': 'था', 'dha': 'धा', 'pha': 'फा',
+    'bha': 'भा', 'sha': 'शा',
+    'kh': 'ख', 'gh': 'घ', 'ng': 'ङ',
+    'ch': 'च', 'jh': 'झ', 'ny': 'ञ',
+    'th': 'थ', 'dh': 'ध', 'ph': 'फ',
+    'bh': 'भ', 'sh': 'श',
+    'aa': 'ा', 'ee': 'ी', 'oo': 'ू', 'ai': 'ै', 'au': 'ौ',
+    'ou': 'ौ', 'ei': 'ै'
+};
+const TRANSLIT_VOWEL_STANDALONE = { 'a': 'अ', 'i': 'इ', 'u': 'उ', 'e': 'ए', 'o': 'ओ' };
+const TRANSLIT_VOWEL_MATRA = { 'a': '', 'i': 'ि', 'u': 'ु', 'e': 'े', 'o': 'ो' };
+const TRANSLIT_CONSONANT = {
+    'k': 'क', 'g': 'ग', 'c': 'च', 'j': 'ज', 't': 'त',
+    'd': 'द', 'n': 'न', 'p': 'प', 'b': 'ब', 'm': 'म',
+    'y': 'य', 'r': 'र', 'l': 'ल', 'v': 'व', 'w': 'व',
+    's': 'स', 'h': 'ह', 'f': 'फ', 'z': 'ज़', 'x': 'क्स', 'q': 'क'
+};
+const DEVANAGARI_DIGITS = '०१२३४५६७८९';
+const TRANSLIT_WORDS = {
+    'name': 'नाम', 'first': 'पहिलो', 'last': 'थर', 'ram': 'राम',
+    'sita': 'सिता', 'hari': 'हरि', 'kumar': 'कुमार', 'shrestha': 'श्रेष्ठ',
+    'sharma': 'शर्मा', 'thapa': 'थापा', 'tamang': 'तामाङ', 'gurung': 'गुरुङ',
+    'magar': 'मगर', 'rai': 'राई', 'limbu': 'लिम्बु', 'nepal': 'नेपाल',
+    'kathmandu': 'काठमाडौं', 'pokhara': 'पोखरा', 'lalitpur': 'ललितपुर',
+    'bhaktapur': 'भक्तपुर', 'biratnagar': 'बिराटनगर',
+    'male': 'पुरुष', 'female': 'महिला', 'other': 'अन्य',
+    'married': 'विवाहित', 'unmarried': 'अविवाहित', 'single': 'एकल',
+    'hindu': 'हिन्दू', 'buddhist': 'बौद्ध', 'muslim': 'मुस्लिम', 'christian': 'ईसाई',
+    'nepali': 'नेपाली', 'father': 'बुबा', 'mother': 'आमा',
+    'son': 'छोरा', 'daughter': 'छोरी', 'husband': 'पति', 'wife': 'पत्नी',
+    'grandfather': 'हजुरबुबा', 'grandmother': 'हजुरआमा',
+    'bahadur': 'बहादुर', 'prasad': 'प्रसाद', 'devi': 'देवी', 'maya': 'माया',
+    'laxmi': 'लक्ष्मी', 'krishna': 'कृष्ण', 'shiva': 'शिव', 'ganesh': 'गणेश',
+    'bir': 'बिर', 'dal': 'दल', 'jit': 'जित'
+};
+
+/** Transliterate a single English word/phrase to Nepali Devanagari */
+function clientTransliterate(text) {
+    if (!text) return '';
+    const lower = text.toLowerCase().trim();
+    if (TRANSLIT_WORDS[lower]) return TRANSLIT_WORDS[lower];
+
+    let result = [];
+    let i = 0;
+    let afterConsonant = false;
+
+    while (i < text.length) {
+        const char = text[i].toLowerCase();
+        let matched = false;
+
+        if (char === ' ') { result.push(' '); afterConsonant = false; i++; continue; }
+        if ('.,;:!?()[]{}"\'-/\\@#$%^&*+=<>|~`'.includes(char)) {
+            result.push(char); afterConsonant = false; i++; continue;
+        }
+        if (char >= '0' && char <= '9') {
+            result.push(DEVANAGARI_DIGITS[parseInt(char)]); afterConsonant = false; i++; continue;
+        }
+        // Already Devanagari? Pass through
+        const code = char.charCodeAt(0);
+        if (code >= 0x0900 && code <= 0x097F) { result.push(text[i]); afterConsonant = false; i++; continue; }
+
+        // Multi-char matches (longest first)
+        for (let len = 4; len >= 2; len--) {
+            const substr = text.substring(i, i + len).toLowerCase();
+            if (TRANSLIT_MULTI[substr]) {
+                result.push(TRANSLIT_MULTI[substr]);
+                afterConsonant = !'aeiou'.includes(substr[substr.length - 1]);
+                i += len; matched = true; break;
+            }
+        }
+        if (matched) continue;
+
+        if (TRANSLIT_CONSONANT[char]) {
+            if (afterConsonant) result.push('्');
+            result.push(TRANSLIT_CONSONANT[char]);
+            afterConsonant = true; i++;
+        } else if (TRANSLIT_VOWEL_STANDALONE[char]) {
+            if (afterConsonant) result.push(TRANSLIT_VOWEL_MATRA[char]);
+            else result.push(TRANSLIT_VOWEL_STANDALONE[char]);
+            afterConsonant = false; i++;
+        } else {
+            result.push(text[i]); afterConsonant = false; i++;
+        }
+    }
+    return result.join('');
+}
+
+// =====================================================
+//  NEPALI TEXT VALIDATION
+// =====================================================
+function isDevanagariChar(ch) {
+    const c = ch.charCodeAt(0);
+    return (c >= 0x0900 && c <= 0x097F);
+}
+
+function isNepaliText(text) {
+    if (!text || !text.trim()) return true;
+    const cleaned = text.replace(/[\s\d.,;:!?()\-\/'"।०-९]+/g, '');
+    if (!cleaned) return true;
+    let nepaliCount = 0;
+    for (const ch of cleaned) { if (isDevanagariChar(ch)) nepaliCount++; }
+    return (nepaliCount / cleaned.length) >= 0.5;
+}
+
+function validateAllFieldsNepali() {
+    const issues = [];
+    const form = document.getElementById('documentForm');
+    if (!form) return issues;
+    form.querySelectorAll('input[type="text"], textarea').forEach(input => {
+        const val = input.value.trim();
+        if (val && !isNepaliText(val)) {
+            const state = fieldStates[input.id];
+            issues.push({ fieldId: input.id, label: state ? state.label : input.id, value: val });
+        }
+    });
+    return issues;
+}
+
+// =====================================================
+//  TOAST NOTIFICATIONS (replaces alert)
+// =====================================================
+function showToast(message, type, duration) {
+    type = type || 'info';
+    duration = duration || 4000;
+    let container = document.getElementById('toastContainer');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toastContainer';
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
+    const toast = document.createElement('div');
+    toast.className = 'toast toast-' + type;
+    toast.textContent = message;
+    container.appendChild(toast);
+    setTimeout(function () {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        toast.style.transition = 'all 0.3s ease';
+        setTimeout(function () { toast.remove(); }, 300);
+    }, duration);
+}
+
+function showError(message) { showToast(message, 'error', 5000); }
+function showSuccess(message) { showToast(message, 'success', 3000); }
+
+// =====================================================
+//  APP INITIALIZATION
+// =====================================================
 document.addEventListener('DOMContentLoaded', function () {
     try {
         loadInitialData();
         setupEventListeners();
+        setupModalCanvas();
     } catch (err) {
         console.error('App init error:', err);
     }
 });
 
-// Setup event listeners
 function setupEventListeners() {
-    const form = document.getElementById('documentForm');
+    var form = document.getElementById('documentForm');
     if (form) form.addEventListener('submit', handleFormSubmit);
-
-    const langToggle = document.getElementById('languageToggle');
-    if (langToggle) langToggle.addEventListener('change', handleLanguageToggle);
-
-    // Canvas setup for freehand writing
-    setupCanvas();
 }
 
-// Load document types from API
 async function loadDocumentTypes() {
     try {
-        const response = await fetch(`${API_BASE}/document-types`);
+        const response = await fetch(API_BASE + '/document-types');
         const data = await response.json();
         console.log('Available document types:', data);
     } catch (error) {
@@ -54,84 +267,74 @@ async function loadDocumentTypes() {
     }
 }
 
-// Map step number to content div id
-const STEP_CONTENT_IDS = {
-    1: 'documentSelection',
-    2: 'inputMethods',
-    3: 'formInput',
-    4: 'previewDownload'
-};
+// Map step number to content div id (3-step flow: Doc Select → Form → Preview)
+const STEP_CONTENT_IDS = { 1: 'documentSelection', 2: 'formInput', 3: 'previewDownload' };
 
-// Step navigation
 function goToStep(step) {
-    // Hide all step content panels
-    document.querySelectorAll('.step-content').forEach(content => {
-        content.classList.add('hidden');
+    document.querySelectorAll('.step-content').forEach(function (c) { c.classList.add('hidden'); });
+    document.querySelectorAll('.step-indicator').forEach(function (ind) {
+        ind.classList.remove('active'); ind.classList.add('bg-gray-200');
     });
-
-    // Reset step indicators (pills)
-    document.querySelectorAll('.step-indicator').forEach(indicator => {
-        indicator.classList.remove('active');
-        indicator.classList.add('bg-gray-200');
-    });
-
-    // Show the content panel for this step
-    const contentId = STEP_CONTENT_IDS[step];
-    if (contentId) {
-        const contentEl = document.getElementById(contentId);
-        if (contentEl) contentEl.classList.remove('hidden');
-    }
-
-    // Highlight current step indicator
-    const stepEl = document.getElementById(`step${step}`);
-    if (stepEl) {
-        stepEl.classList.remove('bg-gray-200');
-        stepEl.classList.add('active');
-    }
-
+    var contentId = STEP_CONTENT_IDS[step];
+    if (contentId) { var el = document.getElementById(contentId); if (el) el.classList.remove('hidden'); }
+    var stepEl = document.getElementById('step' + step);
+    if (stepEl) { stepEl.classList.remove('bg-gray-200'); stepEl.classList.add('active'); }
     currentStep = step;
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// Document selection
+/** Safe navigation: only go to step if prerequisite is met */
+function goToStepSafe(step) {
+    if (step === 2 && !selectedDocument) {
+        showError('कृपया पहिले दस्तावेज छनोट गर्नुहोस्।');
+        return;
+    }
+    if (step === 3 && !window.formData) {
+        showError('कृपया पहिले फारम भर्नुहोस्।');
+        return;
+    }
+    goToStep(step);
+}
+
+/** Go back from preview to form — data is preserved */
+function goBackToForm() {
+    goToStep(2);
+    showToast('फारम सम्पादन गर्न सक्नुहुन्छ — डाटा सुरक्षित छ।', 'info', 2500);
+}
+
 function selectDocument(documentType) {
     selectedDocument = documentType;
     console.log('Selected document:', documentType);
-
-    // Show loading
     showLoading();
-
-    // Load document template
     loadDocumentTemplate(documentType)
-        .then(() => {
+        .then(function () {
             hideLoading();
+            // Go directly to form (step 2) — no input method selection needed
             goToStep(2);
+            showToast('प्रत्येक फिल्डमा किबोर्ड, माइक वा पेन प्रयोग गर्न सकिन्छ', 'info', 3000);
         })
-        .catch(error => {
+        .catch(function (error) {
             hideLoading();
-            const msg = (error && error.message) ? error.message : 'दस्तावेज टेम्प्लेट लोड गर्न सकेन।';
-            showError(msg + '\n\nसर्भर: ' + API_BASE);
+            var msg = (error && error.message) ? error.message : 'दस्तावेज टेम्प्लेट लोड गर्न सकेन।';
+            showError(msg + ' सर्भर: ' + API_BASE);
         });
 }
 
-// Load document template
 async function loadDocumentTemplate(documentType) {
-    const url = `${API_BASE}/template/${documentType}`;
+    var url = API_BASE + '/template/' + documentType;
     try {
         console.log('Fetching template:', url);
-        const response = await fetch(url);
-
+        var response = await fetch(url);
         if (!response.ok) {
-            const msg = response.status === 404
-                ? 'Template not found. Make sure the server is running and templates are loaded.'
-                : `Server error: ${response.status} ${response.statusText}`;
+            var msg = response.status === 404
+                ? 'Template not found. Make sure the server is running.'
+                : 'Server error: ' + response.status;
             throw new Error(msg);
         }
-
         var template = await response.json();
         console.log('Template loaded:', template);
-
         if (template.form_fields && Array.isArray(template.form_fields)) {
-            // Ensure province/district data is loaded before building form
             await ensureLocationData();
             generateFormFields(template.form_fields);
         } else {
@@ -147,7 +350,9 @@ async function loadDocumentTemplate(documentType) {
 var locationData = null;
 var locationDataPromise = null;
 
-// Fallback: all 7 provinces and their districts (used when API fails). Ward numbers are 1–33 by convention; user types them.
+// =====================================================
+//  LOCATION DATA
+// =====================================================
 var NEPAL_LOCATIONS_FALLBACK = {
     country: {
         provinces: [
@@ -162,31 +367,22 @@ var NEPAL_LOCATIONS_FALLBACK = {
     }
 };
 
-// Load document types and location data
 async function loadInitialData() {
     await Promise.all([loadDocumentTypes(), loadLocationData()]);
 }
 
-// Ensure location data is ready (wait for it if still loading). Call this before generating form with province/district.
 function ensureLocationData() {
     if (locationData && locationData.country && locationData.country.provinces && locationData.country.provinces.length > 0) {
         return Promise.resolve();
     }
-    if (!locationDataPromise) {
-        locationDataPromise = loadLocationData();
-    }
+    if (!locationDataPromise) locationDataPromise = loadLocationData();
     return locationDataPromise;
 }
 
-// Load location data from API (supports both Nepali keys and English shape). Uses fallback if API fails.
 async function loadLocationData() {
     try {
         var response = await fetch(API_BASE + '/locations');
-        if (!response.ok) {
-            console.warn('Locations API returned', response.status, '- using built-in list');
-            locationData = NEPAL_LOCATIONS_FALLBACK;
-            return;
-        }
+        if (!response.ok) { locationData = NEPAL_LOCATIONS_FALLBACK; return; }
         var data = await response.json();
         if (data && data['देश'] && data['देश']['प्रदेशहरू']) {
             var raw = data['देश'];
@@ -197,18 +393,10 @@ async function loadLocationData() {
                             province_id: p['प्रदेश_आईडी'],
                             province_name: p['प्रदेश_नाम'],
                             districts: (p['जिल्लाहरू'] || []).map(function (d) {
-                                // Parse municipalities from स्थानीय_तहहरू
                                 var municipalities = (d['स्थानीय_तहहरू'] || []).map(function (m) {
-                                    return {
-                                        name: m.name || m['नाम'],
-                                        type: m.type || m['प्रकार'],
-                                        wards: m.wards || m['वडा']
-                                    };
+                                    return { name: m.name || m['नाम'], type: m.type || m['प्रकार'], wards: m.wards || m['वडा'] };
                                 });
-                                return { 
-                                    district_name: d['जिल्ला_नाम'],
-                                    municipalities: municipalities
-                                };
+                                return { district_name: d['जिल्ला_नाम'], municipalities: municipalities };
                             })
                         };
                     })
@@ -224,13 +412,18 @@ async function loadLocationData() {
         }
         console.log('Location data loaded, provinces:', locationData.country.provinces.length);
     } catch (error) {
-        console.error('Error loading location data:', error, '- using built-in list');
+        console.error('Error loading location data:', error);
         locationData = NEPAL_LOCATIONS_FALLBACK;
     }
 }
 
-// Generate form fields dynamically
+// =====================================================
+//  FORM FIELD GENERATION (ENHANCED WITH TOOLBARS)
+// =====================================================
 function generateFormFields(fields) {
+    // Clear old field states when regenerating
+    Object.keys(fieldStates).forEach(function (k) { delete fieldStates[k]; });
+
     var formFieldsContainer = document.getElementById('formFields');
     if (!formFieldsContainer) return;
     formFieldsContainer.innerHTML = '';
@@ -245,14 +438,13 @@ function generateFormFields(fields) {
 }
 
 function generateFormFieldsInner(fields, formFieldsContainer) {
-    // Check if we have address fields to group
-    const addressFields = fields.filter(f => f.id.includes('address') || f.id.includes('province') || f.id.includes('district') || f.id.includes('municipality') || f.id.includes('ward'));
-    const otherFields = fields.filter(f => !addressFields.includes(f));
+    var addressFields = fields.filter(function (f) {
+        return f.id.includes('address') || f.id.includes('province') || f.id.includes('district') || f.id.includes('municipality') || f.id.includes('ward');
+    });
+    var otherFields = fields.filter(function (f) { return !addressFields.includes(f); });
 
-    // Render other fields first
     otherFields.forEach(function (field) { createFieldElement(field, formFieldsContainer); });
 
-    // Render address fields
     if (addressFields.length > 0) {
         addressFields.forEach(function (field) { createFieldElement(field, formFieldsContainer); });
 
@@ -275,35 +467,40 @@ function generateFormFieldsInner(fields, formFieldsContainer) {
 }
 
 function copyPermanentToTemporary() {
-    // Mapping strategy: replace 'permanent' with 'temporary' or 'old' with 'new'
-    const inputs = document.querySelectorAll('#documentForm input, #documentForm select, #documentForm textarea');
-
-    inputs.forEach(input => {
+    var inputs = document.querySelectorAll('#documentForm input, #documentForm select, #documentForm textarea');
+    inputs.forEach(function (input) {
         if (input.id.includes('permanent') || input.id.includes('old')) {
-            const targetId = input.id.replace('permanent', 'temporary').replace('old', 'new');
-            const targetInput = document.getElementById(targetId);
-
+            var targetId = input.id.replace('permanent', 'temporary').replace('old', 'new');
+            var targetInput = document.getElementById(targetId);
             if (targetInput) {
                 targetInput.value = input.value;
-                // Trigger change event for selects to update dependents
-                if (targetInput.tagName === 'SELECT') {
-                    targetInput.dispatchEvent(new Event('change'));
-                }
+                if (targetInput.tagName === 'SELECT') targetInput.dispatchEvent(new Event('change'));
+                // Sync field state
+                var state = fieldStates[targetId];
+                if (state) state.value = targetInput.value;
             }
         }
     });
 }
 
+/**
+ * CREATE FIELD ELEMENT — Enhanced with per-field input toolbar.
+ * Text/textarea fields get [Keyboard | Mic | Pen] buttons.
+ * Each button writes to the same FieldState.
+ */
 function createFieldElement(field, container) {
-    const fieldDiv = document.createElement('div');
-    fieldDiv.className = 'mb-4';
+    var fieldDiv = document.createElement('div');
+    fieldDiv.className = 'mb-5';
 
-    const label = document.createElement('label');
-    label.className = `block text-gray-700 font-semibold mb-2 ${field.required ? 'required-field' : ''}`;
+    var label = document.createElement('label');
+    label.className = 'block text-gray-700 font-semibold mb-1 ' + (field.required ? 'required-field' : '');
     label.textContent = field.label;
     label.setAttribute('for', field.id);
 
-    let input;
+    // Determine if this is a text-type field that should get the input toolbar
+    var isTextField = (field.type === 'text' || field.type === 'textarea') && field.type !== 'select';
+
+    var input;
     if (field.type === 'select') {
         input = document.createElement('select');
         input.className = 'w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500';
@@ -311,12 +508,11 @@ function createFieldElement(field, container) {
         input.name = field.id;
         input.required = field.required;
 
-        const defaultOption = document.createElement('option');
+        var defaultOption = document.createElement('option');
         defaultOption.value = '';
         defaultOption.textContent = 'छनोट गर्नुहोस्';
         input.appendChild(defaultOption);
 
-        // Special handling for Province (प्रदेश)
         if (field.id.indexOf('province') !== -1) {
             if (locationData && locationData.country && locationData.country.provinces && locationData.country.provinces.length > 0) {
                 locationData.country.provinces.forEach(function (p) {
@@ -326,41 +522,23 @@ function createFieldElement(field, container) {
                     if (p.province_id != null) option.dataset.id = p.province_id;
                     input.appendChild(option);
                 });
-            } else {
-                var emptyOpt = document.createElement('option');
-                emptyOpt.value = '';
-                emptyOpt.textContent = '— प्रदेश लोड भएन (सर्भर जाँच गर्नुहोस्) —';
-                input.appendChild(emptyOpt);
             }
             input.addEventListener('change', function (e) { handleProvinceChange(e, field.id); });
-        }
-        // Special handling for District (जिल्ला) — populated when province is selected
-        else if (field.id.indexOf('district') !== -1) {
+        } else if (field.id.indexOf('district') !== -1) {
             if (field.options && field.options.length > 0) {
                 field.options.forEach(function (opt) {
-                    var optionElement = document.createElement('option');
-                    optionElement.value = opt;
-                    optionElement.textContent = opt;
-                    input.appendChild(optionElement);
+                    var o = document.createElement('option'); o.value = opt; o.textContent = opt; input.appendChild(o);
                 });
             }
-            // Add change listener to populate municipalities
             input.addEventListener('change', function (e) { handleDistrictChange(e, field.id); });
-        }
-        // Special handling for Municipality (स्थानीय तह / नगरपालिका) — populated when district is selected
-        else if (field.id.indexOf('municipality') !== -1 || field.id.indexOf('local_body') !== -1) {
-            // Will be populated by handleDistrictChange when user selects district
+        } else if (field.id.indexOf('municipality') !== -1 || field.id.indexOf('local_body') !== -1) {
             var infoOpt = document.createElement('option');
             infoOpt.value = '';
             infoOpt.textContent = 'पहिले जिल्ला छनोट गर्नुहोस्';
             input.appendChild(infoOpt);
-        }
-        else if (field.options) {
-            field.options.forEach(option => {
-                const optionElement = document.createElement('option');
-                optionElement.value = option;
-                optionElement.textContent = option;
-                input.appendChild(optionElement);
+        } else if (field.options) {
+            field.options.forEach(function (option) {
+                var o = document.createElement('option'); o.value = option; o.textContent = option; input.appendChild(o);
             });
         }
     } else if (field.type === 'textarea') {
@@ -373,100 +551,552 @@ function createFieldElement(field, container) {
     } else {
         input = document.createElement('input');
         input.className = 'w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500';
-        input.type = field.type;
+        input.type = field.type || 'text';
         input.id = field.id;
         input.name = field.id;
         input.required = field.required;
-    }
-
-    // Add event listener for transliteration
-    if (field.id.includes('_en')) {
-        input.addEventListener('blur', handleTransliteration);
+        if (field.type === 'date') input.placeholder = 'YYYY-MM-DD';
     }
 
     fieldDiv.appendChild(label);
-    fieldDiv.appendChild(input);
+
+    // ===== PER-FIELD TOOLBAR (for text/textarea fields only) =====
+    if (isTextField) {
+        var toolbar = createFieldToolbar(field.id);
+        fieldDiv.appendChild(toolbar);
+        fieldDiv.appendChild(input);
+
+        // Transliteration hint (shows preview as user types English)
+        var hint = document.createElement('div');
+        hint.id = 'hint_' + field.id;
+        hint.className = 'transliteration-hint';
+        hint.style.display = 'none';
+        fieldDiv.appendChild(hint);
+
+        // Register in field state store
+        getOrCreateFieldState(field.id, input, field.label);
+
+        // Setup inline keyboard transliteration
+        setupFieldTransliteration(field.id, input);
+    } else {
+        fieldDiv.appendChild(input);
+    }
+
     container.appendChild(fieldDiv);
 }
 
+/** Create the [Keyboard | Mic | Pen] toolbar for a field */
+function createFieldToolbar(fieldId) {
+    var toolbar = document.createElement('div');
+    toolbar.className = 'field-toolbar';
+    toolbar.id = 'toolbar_' + fieldId;
+
+    var modes = [
+        { mode: 'typing', icon: 'fa-keyboard', title: 'किबोर्ड' },
+        { mode: 'voice', icon: 'fa-microphone', title: 'आवाज' },
+        { mode: 'writing', icon: 'fa-pen', title: 'हस्तलेखन' }
+    ];
+
+    modes.forEach(function (m) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = m.mode === 'typing' ? 'active' : '';
+        btn.dataset.mode = m.mode;
+        btn.dataset.field = fieldId;
+        btn.innerHTML = '<i class="fas ' + m.icon + '"></i> <span class="text-xs">' + m.title + '</span>';
+        btn.title = m.title;
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            handleFieldToolbarClick(fieldId, m.mode);
+        });
+        toolbar.appendChild(btn);
+    });
+
+    return toolbar;
+}
+
+function handleFieldToolbarClick(fieldId, mode) {
+    var state = fieldStates[fieldId];
+    if (!state) return;
+
+    if (mode === 'voice') {
+        if (state.isRecording) {
+            stopFieldVoiceInput(fieldId);
+        } else {
+            startFieldVoiceInput(fieldId);
+        }
+    } else if (mode === 'writing') {
+        openFieldCanvas(fieldId);
+    } else {
+        setFieldMode(fieldId, 'typing');
+        if (state.element) {
+            state.element.focus();
+        }
+    }
+}
+
+function setFieldMode(fieldId, mode) {
+    var state = fieldStates[fieldId];
+    if (state) state.activeInputMode = mode;
+
+    var toolbar = document.getElementById('toolbar_' + fieldId);
+    if (toolbar) {
+        toolbar.querySelectorAll('button').forEach(function (btn) {
+            btn.classList.toggle('active', btn.dataset.mode === mode);
+        });
+    }
+}
+
+// =====================================================
+//  PER-FIELD KEYBOARD TRANSLITERATION
+//  Type English → auto-convert to Nepali on Space/Enter
+// =====================================================
+function setupFieldTransliteration(fieldId, input) {
+    var composingWord = '';
+
+    input.addEventListener('keydown', function (e) {
+        if (e.key === ' ' || e.key === 'Enter') {
+            if (composingWord) {
+                e.preventDefault();
+                var nepali = clientTransliterate(composingWord);
+                var val = input.value;
+                var cursorPos = input.selectionStart;
+                var beforeCursor = val.substring(0, cursorPos);
+                var afterCursor = val.substring(cursorPos);
+
+                var wordStart = beforeCursor.lastIndexOf(composingWord);
+                if (wordStart !== -1) {
+                    var suffix = e.key === ' ' ? ' ' : '\n';
+                    input.value = beforeCursor.substring(0, wordStart) + nepali + suffix + afterCursor;
+                    var newPos = wordStart + nepali.length + suffix.length;
+                    input.setSelectionRange(newPos, newPos);
+                }
+
+                composingWord = '';
+                hideTranslitHint(fieldId);
+
+                var state = fieldStates[fieldId];
+                if (state) state.value = input.value;
+            }
+        }
+    });
+
+    input.addEventListener('input', function () {
+        var val = input.value;
+        var cursorPos = input.selectionStart;
+
+        // Sync to field state
+        var state = fieldStates[fieldId];
+        if (state) state.value = val;
+
+        // Find current word (from last space/newline to cursor)
+        var beforeCursor = val.substring(0, cursorPos);
+        var lastBreak = Math.max(beforeCursor.lastIndexOf(' '), beforeCursor.lastIndexOf('\n'));
+        var currentWord = beforeCursor.substring(lastBreak + 1);
+
+        if (currentWord && /^[a-zA-Z]+$/.test(currentWord)) {
+            composingWord = currentWord;
+            var preview = clientTransliterate(currentWord);
+            showTranslitHint(fieldId, preview);
+        } else {
+            composingWord = '';
+            hideTranslitHint(fieldId);
+        }
+    });
+
+    // Convert remaining word on blur
+    input.addEventListener('blur', function () {
+        if (composingWord) {
+            var nepali = clientTransliterate(composingWord);
+            var val = input.value;
+            var wordStart = val.lastIndexOf(composingWord);
+            if (wordStart !== -1) {
+                input.value = val.substring(0, wordStart) + nepali + val.substring(wordStart + composingWord.length);
+            }
+            composingWord = '';
+            hideTranslitHint(fieldId);
+            var state = fieldStates[fieldId];
+            if (state) state.value = input.value;
+        }
+    });
+}
+
+function showTranslitHint(fieldId, text) {
+    var hint = document.getElementById('hint_' + fieldId);
+    if (hint) { hint.textContent = '→ ' + text; hint.style.display = 'block'; }
+}
+
+function hideTranslitHint(fieldId) {
+    var hint = document.getElementById('hint_' + fieldId);
+    if (hint) hint.style.display = 'none';
+}
+
+// =====================================================
+//  PER-FIELD VOICE INPUT
+//  Click mic on any field → record → transcribe → fill
+// =====================================================
+async function startFieldVoiceInput(fieldId) {
+    var state = fieldStates[fieldId];
+    if (!state || state.isRecording) return;
+
+    try {
+        var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        var mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/mp4'];
+        var selectedMime = '';
+        for (var i = 0; i < mimeTypes.length; i++) {
+            if (MediaRecorder.isTypeSupported(mimeTypes[i])) { selectedMime = mimeTypes[i]; break; }
+        }
+
+        var options = selectedMime ? { mimeType: selectedMime } : {};
+        state.mediaRecorder = new MediaRecorder(stream, options);
+        state.audioChunks = [];
+
+        state.mediaRecorder.ondataavailable = function (e) { state.audioChunks.push(e.data); };
+        state.mediaRecorder.onstop = function () { handleFieldRecordingStop(fieldId); };
+
+        state.mediaRecorder.start();
+        state.isRecording = true;
+
+        setFieldMode(fieldId, 'voice');
+
+        // Visual feedback — pulse the input border red
+        if (state.element) state.element.classList.add('field-recording');
+
+        // Update toolbar mic button
+        var toolbar = document.getElementById('toolbar_' + fieldId);
+        if (toolbar) {
+            var voiceBtn = toolbar.querySelector('[data-mode="voice"]');
+            if (voiceBtn) voiceBtn.innerHTML = '<i class="fas fa-stop text-red-500"></i> <span class="text-xs">बन्द</span>';
+        }
+
+        showToast('रेकर्डिङ सुरु भयो — बोल्नुहोस्', 'info', 2000);
+    } catch (error) {
+        console.error('Mic error:', error);
+        showError('माइक्रोफोन पहुँच गर्न सकेन। कृपया ब्राउजर अनुमति जाँच गर्नुहोस्।');
+    }
+}
+
+function stopFieldVoiceInput(fieldId) {
+    var state = fieldStates[fieldId];
+    if (!state || !state.isRecording) return;
+
+    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
+        state.mediaRecorder.stop();
+        state.mediaRecorder.stream.getTracks().forEach(function (t) { t.stop(); });
+    }
+    state.isRecording = false;
+
+    if (state.element) state.element.classList.remove('field-recording');
+
+    var toolbar = document.getElementById('toolbar_' + fieldId);
+    if (toolbar) {
+        var voiceBtn = toolbar.querySelector('[data-mode="voice"]');
+        if (voiceBtn) voiceBtn.innerHTML = '<i class="fas fa-microphone"></i> <span class="text-xs">आवाज</span>';
+    }
+
+    showToast('प्रक्रिया गरिँदैछ...', 'info', 3000);
+}
+
+async function handleFieldRecordingStop(fieldId) {
+    var state = fieldStates[fieldId];
+    if (!state) return;
+
+    var actualMime = state.mediaRecorder.mimeType || 'audio/webm';
+    var ext = actualMime.includes('ogg') ? 'ogg' : actualMime.includes('mp4') ? 'mp4' : 'webm';
+    var audioBlob = new Blob(state.audioChunks, { type: actualMime });
+
+    // Verify the blob actually has data
+    if (audioBlob.size < 100) {
+        showError('रेकर्डिङ खाली छ। कृपया पुनः बोल्नुहोस्।');
+        return;
+    }
+
+    var audioFile = new File([audioBlob], 'recording_' + fieldId + '.' + ext, { type: actualMime });
+
+    showLoading();
+
+    try {
+        var fd = new FormData();
+        fd.append('audio', audioFile);
+
+        console.log('[Voice] Sending audio for transcription:', audioFile.name, 'size:', audioFile.size, 'type:', actualMime);
+
+        var response = await fetch(API_BASE + '/transcribe-audio', { method: 'POST', body: fd });
+        var result = await response.json();
+
+        console.log('[Voice] Server response:', result);
+
+        if (response.ok && result.transcription) {
+            // Write directly to the field's state → updates DOM
+            var text = result.transcription.trim();
+            if (text) {
+                state.setValue(text, 'voice');
+                showSuccess('आवाज पहिचान सफल!' + (result.grammar_corrected ? ' (व्याकरण सच्याइयो)' : ''));
+            } else {
+                showError('आवाज पहिचान खाली छ। कृपया स्पष्ट रूपमा बोल्नुहोस्।');
+            }
+        } else {
+            var detail = result.detail || 'Transcription failed';
+            console.error('[Voice] Transcription failed:', detail);
+            showError('आवाज पहिचान गर्न सकेन: ' + detail);
+        }
+    } catch (error) {
+        console.error('[Voice] Transcription error for field', fieldId, ':', error);
+        showError('आवाज पहिचान गर्न सकेन। सर्भर जडान जाँच गर्नुहोस्।');
+    } finally {
+        hideLoading();
+    }
+}
+
+// =====================================================
+//  PER-FIELD HANDWRITING CANVAS (Modal)
+//  Click pen on a field → modal canvas → recognize → fill
+// =====================================================
+function openFieldCanvas(fieldId) {
+    activeCanvasFieldId = fieldId;
+    var state = fieldStates[fieldId];
+
+    var labelEl = document.getElementById('canvasFieldLabel');
+    if (labelEl) labelEl.textContent = state ? state.label : fieldId;
+
+    clearModalCanvas();
+
+    var modal = document.getElementById('canvasModal');
+    if (modal) modal.classList.remove('hidden');
+
+    setFieldMode(fieldId, 'writing');
+}
+
+function closeFieldCanvas() {
+    var modal = document.getElementById('canvasModal');
+    if (modal) modal.classList.add('hidden');
+    // Reset the field back to typing mode so user can continue
+    if (activeCanvasFieldId) {
+        setFieldMode(activeCanvasFieldId, 'typing');
+    }
+    activeCanvasFieldId = null;
+}
+
+function clearModalCanvas() {
+    var canvas = document.getElementById('modalCanvas');
+    if (canvas) {
+        var ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+}
+
+async function submitFieldCanvas() {
+    if (!activeCanvasFieldId) return;
+    var canvas = document.getElementById('modalCanvas');
+    if (!canvas) return;
+
+    var ctx = canvas.getContext('2d');
+    var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    var hasContent = false;
+    for (var i = 0; i < imgData.data.length; i += 4) {
+        if (imgData.data[i] !== 0 || imgData.data[i + 1] !== 0 || imgData.data[i + 2] !== 0) {
+            if (imgData.data[i + 3] > 0) { hasContent = true; break; }
+        }
+    }
+
+    if (!hasContent) { showError('कृपया पहिले केही लेख्नुहोस्।'); return; }
+
+    showLoading();
+    var fieldId = activeCanvasFieldId;
+
+    try {
+        var imageData64 = canvas.toDataURL('image/png');
+        console.log('[Handwriting] Sending canvas image for recognition, field:', fieldId);
+
+        var response = await fetch(API_BASE + '/recognize-handwriting', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: imageData64 })
+        });
+
+        var result = await response.json();
+        console.log('[Handwriting] Server response:', result);
+
+        if (response.ok && result.text) {
+            var recognizedText = result.text.trim();
+            if (recognizedText) {
+                // Apply grammar correction
+                var correctedText = await correctNepaliGrammar(recognizedText, fieldId);
+
+                var state = fieldStates[fieldId];
+                if (state) {
+                    state.setValue(correctedText, 'handwriting');
+                    console.log('[Handwriting] Field', fieldId, 'set to:', correctedText);
+                } else {
+                    // Fallback: directly set the DOM element
+                    var inputEl = document.getElementById(fieldId);
+                    if (inputEl) {
+                        inputEl.value = correctedText;
+                        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+                        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        console.log('[Handwriting] Direct DOM set for', fieldId, ':', correctedText);
+                    }
+                }
+                showSuccess('हस्तलेख पहिचान सफल!');
+                closeFieldCanvas();
+            } else {
+                showError('पाठ पहिचान गर्न सकेन। कृपया स्पष्ट रूपमा लेख्नुहोस्।');
+            }
+        } else if (response.status === 503) {
+            showError('AI मोडेल उपलब्ध छैन। GEMINI_API_KEY सेट गर्नुहोस्।');
+        } else {
+            var detail = result.detail || 'Recognition failed';
+            showError('हस्तलेख पहिचान गर्न सकेन: ' + detail);
+        }
+    } catch (error) {
+        console.error('[Handwriting] Error:', error);
+        showError('हस्तलेख पहिचान गर्न सकेन। सर्भर जडान जाँच गर्नुहोस्।');
+    } finally {
+        hideLoading();
+    }
+}
+
+/** Call server to correct Nepali grammar */
+async function correctNepaliGrammar(text, fieldId) {
+    if (!text || !text.trim()) return text;
+    try {
+        var state = fieldStates[fieldId];
+        var context = state ? state.label : '';
+        var response = await fetch(API_BASE + '/correct-grammar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text, context: context })
+        });
+        if (response.ok) {
+            var result = await response.json();
+            if (result.corrected && result.corrected.trim()) {
+                return result.corrected.trim();
+            }
+        }
+    } catch (e) {
+        console.warn('[Grammar] Correction failed, using original:', e);
+    }
+    return text;
+}
+
+/** Setup drawing on the modal canvas */
+function setupModalCanvas() {
+    var canvas = document.getElementById('modalCanvas');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+
+    canvas.addEventListener('mousedown', function (e) {
+        isModalDrawing = true;
+        var pos = getCanvasPos(canvas, e);
+        modalLastX = pos[0]; modalLastY = pos[1];
+    });
+    canvas.addEventListener('mousemove', function (e) {
+        if (!isModalDrawing) return;
+        var pos = getCanvasPos(canvas, e);
+        ctx.beginPath();
+        ctx.moveTo(modalLastX, modalLastY);
+        ctx.lineTo(pos[0], pos[1]);
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+        modalLastX = pos[0]; modalLastY = pos[1];
+    });
+    canvas.addEventListener('mouseup', function () { isModalDrawing = false; });
+    canvas.addEventListener('mouseout', function () { isModalDrawing = false; });
+
+    // Touch events
+    canvas.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        isModalDrawing = true;
+        var pos = getCanvasPos(canvas, e.touches[0]);
+        modalLastX = pos[0]; modalLastY = pos[1];
+    });
+    canvas.addEventListener('touchmove', function (e) {
+        e.preventDefault();
+        if (!isModalDrawing) return;
+        var pos = getCanvasPos(canvas, e.touches[0]);
+        ctx.beginPath();
+        ctx.moveTo(modalLastX, modalLastY);
+        ctx.lineTo(pos[0], pos[1]);
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+        modalLastX = pos[0]; modalLastY = pos[1];
+    });
+    canvas.addEventListener('touchend', function () { isModalDrawing = false; });
+}
+
+function getCanvasPos(canvas, e) {
+    var rect = canvas.getBoundingClientRect();
+    var clientX = e.clientX !== undefined ? e.clientX : e.pageX;
+    var clientY = e.clientY !== undefined ? e.clientY : e.pageY;
+    return [
+        (clientX - rect.left) * (canvas.width / rect.width),
+        (clientY - rect.top) * (canvas.height / rect.height)
+    ];
+}
+
+// =====================================================
+//  PROVINCE / DISTRICT / MUNICIPALITY CASCADING
+// =====================================================
 function handleProvinceChange(e, provinceFieldId) {
     var selectedProvinceName = e.target.value;
     var districtFieldId = provinceFieldId.replace('province', 'district');
     var districtSelect = document.getElementById(districtFieldId);
-
     if (!districtSelect) return;
 
-    // Clear district dropdown and show default
     districtSelect.innerHTML = '<option value="">छनोट गर्नुहोस्</option>';
     districtSelect.value = '';
 
-    if (!selectedProvinceName || !locationData || !locationData.country || !locationData.country.provinces) {
-        return;
-    }
+    if (!selectedProvinceName || !locationData || !locationData.country || !locationData.country.provinces) return;
 
     var province = null;
     for (var i = 0; i < locationData.country.provinces.length; i++) {
-        if (locationData.country.provinces[i].province_name === selectedProvinceName) {
-            province = locationData.country.provinces[i];
-            break;
-        }
+        if (locationData.country.provinces[i].province_name === selectedProvinceName) { province = locationData.country.provinces[i]; break; }
     }
 
     if (province && province.districts && province.districts.length > 0) {
         province.districts.forEach(function (d) {
             var option = document.createElement('option');
-            option.value = d.district_name;
-            option.textContent = d.district_name;
+            option.value = d.district_name; option.textContent = d.district_name;
             districtSelect.appendChild(option);
         });
     }
 
-    // Also clear municipality dropdown if exists
     var municipalityFieldId = provinceFieldId.replace('province', 'municipality');
     var municipalitySelect = document.getElementById(municipalityFieldId);
-    if (municipalitySelect) {
-        municipalitySelect.innerHTML = '<option value="">पहिले जिल्ला छनोट गर्नुहोस्</option>';
-    }
+    if (municipalitySelect) municipalitySelect.innerHTML = '<option value="">पहिले जिल्ला छनोट गर्नुहोस्</option>';
 }
 
-// Handle district change to populate municipalities
 function handleDistrictChange(e, districtFieldId) {
     var selectedDistrictName = e.target.value;
     var municipalityFieldId = districtFieldId.replace('district', 'municipality');
     var municipalitySelect = document.getElementById(municipalityFieldId);
-    
-    // Find province field id
     var provinceFieldId = districtFieldId.replace('district', 'province');
     var provinceSelect = document.getElementById(provinceFieldId);
     var selectedProvinceName = provinceSelect ? provinceSelect.value : '';
 
     if (!municipalitySelect) return;
-
-    // Clear municipality dropdown
     municipalitySelect.innerHTML = '<option value="">छनोट गर्नुहोस्</option>';
     municipalitySelect.value = '';
 
-    if (!selectedDistrictName || !selectedProvinceName || !locationData || !locationData.country || !locationData.country.provinces) {
-        return;
-    }
+    if (!selectedDistrictName || !selectedProvinceName || !locationData || !locationData.country || !locationData.country.provinces) return;
 
-    // Find the district data
     var province = null;
     for (var i = 0; i < locationData.country.provinces.length; i++) {
-        if (locationData.country.provinces[i].province_name === selectedProvinceName) {
-            province = locationData.country.provinces[i];
-            break;
-        }
+        if (locationData.country.provinces[i].province_name === selectedProvinceName) { province = locationData.country.provinces[i]; break; }
     }
-
     if (!province || !province.districts) return;
 
     var district = null;
-    for (var i = 0; i < province.districts.length; i++) {
-        if (province.districts[i].district_name === selectedDistrictName) {
-            district = province.districts[i];
-            break;
-        }
+    for (var j = 0; j < province.districts.length; j++) {
+        if (province.districts[j].district_name === selectedDistrictName) { district = province.districts[j]; break; }
     }
 
     if (district && district.municipalities && district.municipalities.length > 0) {
@@ -480,380 +1110,124 @@ function handleDistrictChange(e, districtFieldId) {
     }
 }
 
-// Input method selection
+// =====================================================
+//  INPUT METHOD SELECTION — NO LONGER NEEDED
+//  All 3 modes are on every field toolbar now.
+//  Kept as no-op for backward compat.
+// =====================================================
 function selectInputMethod(method) {
-    selectedInputMethod = method;
+    selectedInputMethod = method || 'text';
+    goToStep(2);
+}
 
-    var voiceEl = document.getElementById('voiceInterface');
-    var freehandEl = document.getElementById('freehandInterface');
-    var textFormEl = document.getElementById('textForm');
-    if (voiceEl) voiceEl.classList.add('hidden');
-    if (freehandEl) freehandEl.classList.add('hidden');
-    if (textFormEl) textFormEl.classList.add('hidden');
+// =====================================================
+//  FORM SUBMISSION (ENHANCED WITH NEPALI VALIDATION + GRAMMAR)
+// =====================================================
+async function handleFormSubmit(e) {
+    e.preventDefault();
 
-    if (method === 'voice' && voiceEl) {
-        voiceEl.classList.remove('hidden');
-    } else if (method === 'freehand' && freehandEl) {
-        freehandEl.classList.remove('hidden');
-    } else if (textFormEl) {
-        textFormEl.classList.remove('hidden');
+    // Sync all field states from DOM
+    Object.keys(fieldStates).forEach(function (fid) { fieldStates[fid].getValue(); });
+
+    var form = e.target;
+    var fd = new FormData(form);
+    var data = {};
+    for (var pair of fd.entries()) { data[pair[0]] = pair[1]; }
+
+    // Validate required fields
+    var requiredFields = form.querySelectorAll('[required]');
+    var isValid = true;
+    requiredFields.forEach(function (field) {
+        if (!field.value.trim()) { field.classList.add('border-red-500'); isValid = false; }
+        else { field.classList.remove('border-red-500'); }
+    });
+    if (!isValid) { showError('कृपया सबै आवश्यक फिल्डहरू भर्नुहोस्।'); return; }
+
+    // ===== NEPALI ENFORCEMENT =====
+    var nonNepali = validateAllFieldsNepali();
+    if (nonNepali.length > 0) {
+        showLoading();
+        var autoFixed = 0;
+        for (var ni = 0; ni < nonNepali.length; ni++) {
+            var f = nonNepali[ni];
+            var state = fieldStates[f.fieldId];
+            if (state) {
+                // First try client-side transliteration
+                var converted = clientTransliterate(f.value);
+                if (isNepaliText(converted)) {
+                    state.setValue(converted, 'auto-transliteration');
+                    data[f.fieldId] = converted;
+                    autoFixed++;
+                } else {
+                    // Fall back to server-side transliteration (Gemini)
+                    try {
+                        var resp = await fetch(API_BASE + '/transliterate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: f.value, from_lang: 'en', to_lang: 'ne' })
+                        });
+                        if (resp.ok) {
+                            var trResult = await resp.json();
+                            if (trResult.transliterated_text && isNepaliText(trResult.transliterated_text)) {
+                                state.setValue(trResult.transliterated_text, 'server-transliteration');
+                                data[f.fieldId] = trResult.transliterated_text;
+                                autoFixed++;
+                            }
+                        }
+                    } catch (trErr) {
+                        console.warn('[Transliterate] Server fallback failed for', f.fieldId, trErr);
+                    }
+                }
+            }
+        }
+        hideLoading();
+        if (autoFixed > 0) {
+            showToast(autoFixed + ' फिल्ड स्वचालित नेपालीमा रूपान्तरण गरियो।', 'info');
+        }
+        // Re-check
+        var stillBad = validateAllFieldsNepali();
+        if (stillBad.length > 0) {
+            showError('यी फिल्डहरू नेपालीमा हुनुपर्छ: ' + stillBad.map(function (f) { return f.label; }).join(', '));
+            stillBad.forEach(function (f) {
+                var el = document.getElementById(f.fieldId);
+                if (el) el.classList.add('border-red-500');
+            });
+            return;
+        }
     }
 
+    // Re-sync data after corrections
+    fd = new FormData(form);
+    data = {};
+    for (var pair of fd.entries()) { data[pair[0]] = pair[1]; }
+
+    window.formData = data;
+    showDocumentPreview(data);
     goToStep(3);
 }
 
-// Voice recording functions
-async function toggleRecording() {
-    if (!isRecording) {
-        await startRecording();
-    } else {
-        stopRecording();
-    }
-}
-
-async function startRecording() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        
-        // Pick best supported audio format for the browser
-        const mimeTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/mp4'];
-        let selectedMime = '';
-        for (const mime of mimeTypes) {
-            if (MediaRecorder.isTypeSupported(mime)) {
-                selectedMime = mime;
-                break;
-            }
-        }
-        console.log('Using audio MIME type:', selectedMime || 'browser default');
-        
-        const recorderOptions = selectedMime ? { mimeType: selectedMime } : {};
-        mediaRecorder = new MediaRecorder(stream, recorderOptions);
-        audioChunks = [];
-
-        mediaRecorder.ondataavailable = event => {
-            audioChunks.push(event.data);
-        };
-
-        mediaRecorder.onstop = handleRecordingStop;
-
-        mediaRecorder.start();
-        isRecording = true;
-
-        var recordBtn = document.getElementById('recordBtn');
-        var statusEl = document.getElementById('recordingStatus');
-        if (recordBtn) {
-            recordBtn.innerHTML = '<i class="fas fa-stop mr-2"></i>रेकर्डिङ बन्द गर्नुहोस्';
-            recordBtn.classList.add('voice-recording');
-        }
-        if (statusEl) statusEl.textContent = 'रेकर्डिङ भइरहेको छ...';
-
-    } catch (error) {
-        console.error('Error starting recording:', error);
-        showError('माइक्रोफोन पहुँच गर्न सकेन।');
-    }
-}
-
-function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-        mediaRecorder.stream.getTracks().forEach(track => track.stop());
-        isRecording = false;
-
-        var recordBtn = document.getElementById('recordBtn');
-        var statusEl = document.getElementById('recordingStatus');
-        if (recordBtn) {
-            recordBtn.innerHTML = '<i class="fas fa-microphone mr-2"></i>रेकर्डिङ सुरु गर्नुहोस्';
-            recordBtn.classList.remove('voice-recording');
-        }
-        if (statusEl) statusEl.textContent = 'रेकर्डिङ पूरा भयो। प्रक्रिया गरिँदैछ...';
-    }
-}
-
-async function handleRecordingStop() {
-    const actualMime = mediaRecorder.mimeType || 'audio/webm';
-    const ext = actualMime.includes('ogg') ? 'ogg' : actualMime.includes('mp4') ? 'mp4' : 'webm';
-    const audioBlob = new Blob(audioChunks, { type: actualMime });
-    const audioFile = new File([audioBlob], `recording.${ext}`, { type: actualMime });
-    console.log('Sending audio:', audioFile.name, 'type:', actualMime, 'size:', audioBlob.size);
-
-    try {
-        const formData = new FormData();
-        formData.append('audio', audioFile);
-
-        const response = await fetch(`${API_BASE}/transcribe-audio`, {
-            method: 'POST',
-            body: formData
-        });
-
-        const result = await response.json();
-
-        if (response.ok) {
-            displayTranscription(result.transcription);
-            fillFormFromTranscription(result.transcription);
-        } else {
-            throw new Error(result.detail || 'Transcription failed');
-        }
-    } catch (error) {
-        console.error('Error transcribing audio:', error);
-        showError('ट्रान्स्क्रिप्सन गर्न सकेन।');
-    }
-}
-
-function displayTranscription(text) {
-    var resultDiv = document.getElementById('transcriptionResult');
-    var statusEl = document.getElementById('recordingStatus');
-    if (resultDiv) {
-        resultDiv.textContent = 'पहिचानिएको पाठ: ' + text;
-        resultDiv.classList.remove('hidden');
-    }
-    if (statusEl) statusEl.textContent = 'ट्रान्स्क्रिप्सन सफल!';
-}
-
-// Freehand writing functions
-function setupCanvas() {
-    const canvas = document.getElementById('drawingCanvas');
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    let isDrawing = false;
-    let lastX = 0;
-    let lastY = 0;
-
-    canvas.addEventListener('mousedown', startDrawing);
-    canvas.addEventListener('mousemove', draw);
-    canvas.addEventListener('mouseup', stopDrawing);
-    canvas.addEventListener('mouseout', stopDrawing);
-
-    // Touch events for mobile
-    canvas.addEventListener('touchstart', handleTouch);
-    canvas.addEventListener('touchmove', handleTouch);
-    canvas.addEventListener('touchend', stopDrawing);
-
-    function startDrawing(e) {
-        isDrawing = true;
-        [lastX, lastY] = getMousePos(canvas, e);
-    }
-
-    function draw(e) {
-        if (!isDrawing) return;
-
-        const [currentX, currentY] = getMousePos(canvas, e);
-
-        ctx.beginPath();
-        ctx.moveTo(lastX, lastY);
-        ctx.lineTo(currentX, currentY);
-        ctx.strokeStyle = '#000';
-        ctx.lineWidth = 2;
-        ctx.lineCap = 'round';
-        ctx.stroke();
-
-        [lastX, lastY] = [currentX, currentY];
-    }
-
-    function stopDrawing() {
-        isDrawing = false;
-    }
-
-    function handleTouch(e) {
-        e.preventDefault();
-        const touch = e.touches[0];
-        const mouseEvent = new MouseEvent(e.type === 'touchstart' ? 'mousedown' :
-            e.type === 'touchmove' ? 'mousemove' : 'mouseup', {
-            clientX: touch.clientX,
-            clientY: touch.clientY
-        });
-        canvas.dispatchEvent(mouseEvent);
-    }
-
-    function getMousePos(canvas, e) {
-        const rect = canvas.getBoundingClientRect();
-        return [
-            (e.clientX - rect.left) * (canvas.width / rect.width),
-            (e.clientY - rect.top) * (canvas.height / rect.height)
-        ];
-    }
-}
-
-function clearCanvas() {
-    const canvas = document.getElementById('drawingCanvas');
-    if (canvas) {
-        const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-}
-
-async function recognizeHandwriting() {
-    const canvas = document.getElementById('drawingCanvas');
-    if (!canvas) {
-        showError('क्यानभास फेला परेन।');
-        return;
-    }
-    
-    // Check if canvas has content
-    const ctx = canvas.getContext('2d');
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const hasContent = imageData.data.some((pixel, i) => i % 4 !== 3 && pixel !== 0);
-    
-    if (!hasContent) {
-        showError('कृपया पहिले केही लेख्नुहोस्।');
-        return;
-    }
-
-    showLoading();
-    
-    try {
-        // Convert canvas to base64 image
-        const imageData64 = canvas.toDataURL('image/png');
-        
-        // Send to backend for recognition
-        const response = await fetch(`${API_BASE}/recognize-handwriting`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ image: imageData64 })
-        });
-
-        const result = await response.json();
-
-        if (response.ok && result.text) {
-            displayRecognizedText(result.text);
-            fillFormFromTranscription(result.text);
-        } else {
-            throw new Error(result.detail || 'Recognition failed');
-        }
-    } catch (error) {
-        console.error('Error recognizing handwriting:', error);
-        // Fallback: show form for manual entry
-        showError('हस्तलेख पहिचान गर्न सकेन। कृपया म्यानुअल रूपमा टाइप गर्नुहोस्।');
-        
-        var freehandEl = document.getElementById('freehandInterface');
-        var textFormEl = document.getElementById('textForm');
-        if (freehandEl) freehandEl.classList.add('hidden');
-        if (textFormEl) textFormEl.classList.remove('hidden');
-    } finally {
-        hideLoading();
-    }
-}
-
-function displayRecognizedText(text) {
-    // Show the recognized text and switch to form view
-    var freehandEl = document.getElementById('freehandInterface');
-    var textFormEl = document.getElementById('textForm');
-    
-    if (freehandEl) freehandEl.classList.add('hidden');
-    if (textFormEl) textFormEl.classList.remove('hidden');
-    
-    showSuccess('पहिचानिएको पाठ: ' + text);
-}
-
-// Form handling
-function handleFormSubmit(e) {
-    e.preventDefault();
-
-    // Collect form data
-    const form = e.target;
-    const formData = new FormData(form);
-    const data = {};
-
-    for (let [key, value] of formData.entries()) {
-        data[key] = value;
-    }
-
-    // Validate required fields
-    const requiredFields = form.querySelectorAll('[required]');
-    let isValid = true;
-
-    requiredFields.forEach(field => {
-        if (!field.value.trim()) {
-            field.classList.add('border-red-500');
-            isValid = false;
-        } else {
-            field.classList.remove('border-red-500');
-        }
-    });
-
-    if (!isValid) {
-        showError('कृपया सबै आवश्यक फिल्डहरू भर्नुहोस्।');
-        return;
-    }
-
-    // Store form data
-    window.formData = data;
-
-    // Show preview
-    showDocumentPreview(data);
-    goToStep(4);
-}
-
-// Transliteration
-async function handleTransliteration(e) {
-    const text = e.target.value;
-    if (!text || !document.getElementById('languageToggle').checked) {
-        return;
-    }
-
-    try {
-        const response = await fetch(`${API_BASE}/transliterate`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                text: text,
-                from_lang: 'en',
-                to_lang: 'ne'
-            })
-        });
-
-        const result = await response.json();
-
-        if (response.ok) {
-            // Find corresponding Nepali field and fill it
-            const nepaliFieldId = e.target.id.replace('_en', '');
-            const nepaliField = document.getElementById(nepaliFieldId);
-            if (nepaliField && !nepaliField.value) {
-                nepaliField.value = result.transliterated_text;
-            }
-        }
-    } catch (error) {
-        console.error('Transliteration error:', error);
-    }
-}
-
-// Document generation
+// =====================================================
+//  DOCUMENT GENERATION & DOWNLOAD
+// =====================================================
 async function generatePDF() {
     showLoading();
-
     try {
-        const response = await fetch(`${API_BASE}/generate-document`, {
+        var response = await fetch(API_BASE + '/generate-document', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                document_type: selectedDocument,
-                user_data: window.formData,
-                language: 'ne'
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ document_type: selectedDocument, user_data: window.formData, language: 'ne' })
         });
-
-        const result = await response.json();
-
+        var result = await response.json();
         if (response.ok) {
-            // Show download button
             document.getElementById('downloadBtn').classList.remove('hidden');
-            document.getElementById('downloadBtn').onclick = () => downloadPDF(result.pdf_path);
-
-            // Show preview
+            document.getElementById('downloadBtn').onclick = function () { downloadPDF(result.pdf_path); };
             showDocumentPreview(result.content);
-
             showSuccess('PDF सफलतापूर्वक उत्पन्न भयो!');
         } else {
             throw new Error(result.detail || 'PDF generation failed');
         }
     } catch (error) {
-        console.error('Error generating PDF:', error);
+        console.error('PDF error:', error);
         showError('PDF उत्पन्न गर्न सकेन।');
     } finally {
         hideLoading();
@@ -861,10 +1235,9 @@ async function generatePDF() {
 }
 
 function downloadPDF(pdfPath) {
-    // Get filename from path (handles both / and \)
-    const filename = pdfPath.replace(/^.*[/\\]/, '');
-    const link = document.createElement('a');
-    link.href = `${API_BASE}/download-document/${filename}`;
+    var filename = pdfPath.replace(/^.*[/\\]/, '');
+    var link = document.createElement('a');
+    link.href = API_BASE + '/download-document/' + filename;
     link.download = filename;
     document.body.appendChild(link);
     link.click();
@@ -872,143 +1245,79 @@ function downloadPDF(pdfPath) {
 }
 
 function showDocumentPreview(content) {
-    const previewDiv = document.getElementById('documentPreview');
-    
-    // If content is an object (form data before generation), format it nicely
+    var previewDiv = document.getElementById('documentPreview');
     if (typeof content === 'object' && content !== null) {
-        let html = '<div class="bg-gray-50 p-6 rounded-lg"><h3 class="text-lg font-semibold mb-4">\u0926\u0938\u094d\u0924\u093e\u0935\u0947\u091c \u092a\u0942\u0930\u094d\u0935\u093e\u0935\u0932\u094b\u0915\u0928</h3><div class="bg-white p-4 rounded border">';
+        var html = '<div class="bg-gray-50 p-6 rounded-lg"><h3 class="text-lg font-semibold mb-4">दस्तावेज पूर्वावलोकन</h3><div class="bg-white p-4 rounded border">';
         html += '<table class="w-full text-sm">';
-        for (const [key, value] of Object.entries(content)) {
-            if (value) {
-                html += `<tr class="border-b"><td class="py-2 pr-4 font-medium text-gray-600">${key}</td><td class="py-2">${value}</td></tr>`;
+        for (var key in content) {
+            if (content[key]) {
+                html += '<tr class="border-b"><td class="py-2 pr-4 font-medium text-gray-600">' + key + '</td><td class="py-2">' + content[key] + '</td></tr>';
             }
         }
         html += '</table></div></div>';
         previewDiv.innerHTML = html;
     } else {
-        // Content is text (from server response)
-        const sanitized = String(content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        previewDiv.innerHTML = `
-            <div class="bg-gray-50 p-6 rounded-lg">
-                <h3 class="text-lg font-semibold mb-4">\u0926\u0938\u094d\u0924\u093e\u0935\u0947\u091c \u092a\u0942\u0930\u094d\u0935\u093e\u0935\u0932\u094b\u0915\u0928</h3>
-                <div class="bg-white p-4 rounded border" style="font-family: 'Poppins', sans-serif; line-height: 1.8;">
-                    <pre class="whitespace-pre-wrap text-sm">${sanitized}</pre>
-                </div>
-            </div>
-        `;
+        var sanitized = String(content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        previewDiv.innerHTML = '<div class="bg-gray-50 p-6 rounded-lg"><h3 class="text-lg font-semibold mb-4">दस्तावेज पूर्वावलोकन</h3><div class="bg-white p-4 rounded border" style="line-height:1.8"><pre class="whitespace-pre-wrap text-sm">' + sanitized + '</pre></div></div>';
     }
 }
 
-// Utility functions
-function showLoading() {
-    var el = document.getElementById('loadingOverlay');
-    if (el) el.classList.remove('hidden');
-}
+// =====================================================
+//  UTILITY FUNCTIONS
+// =====================================================
+function showLoading() { var el = document.getElementById('loadingOverlay'); if (el) el.classList.remove('hidden'); }
+function hideLoading() { var el = document.getElementById('loadingOverlay'); if (el) el.classList.add('hidden'); }
 
-function hideLoading() {
-    var el = document.getElementById('loadingOverlay');
-    if (el) el.classList.add('hidden');
-}
-
-function showError(message) {
-    alert(message); // In production, use a better notification system
-}
-
-function showSuccess(message) {
-    alert(message); // In production, use a better notification system
-}
-
-// Feedback system
 function rateService(rating) {
-    const stars = document.querySelectorAll('.fa-star');
-    stars.forEach((star, index) => {
-        if (index < rating) {
-            star.classList.remove('text-gray-300');
-            star.classList.add('text-yellow-400');
-        } else {
-            star.classList.remove('text-yellow-400');
-            star.classList.add('text-gray-300');
-        }
+    var stars = document.querySelectorAll('.fa-star');
+    stars.forEach(function (star, index) {
+        if (index < rating) { star.classList.remove('text-gray-300'); star.classList.add('text-yellow-400'); }
+        else { star.classList.remove('text-yellow-400'); star.classList.add('text-gray-300'); }
     });
 }
 
 function submitFeedback() {
-    const feedbackText = document.getElementById('feedbackText').value;
-    const rating = document.querySelectorAll('.fa-star.text-yellow-400').length;
-
-    // In production, send this to your backend
-    console.log('Feedback submitted:', { rating, feedback: feedbackText });
-
+    var feedbackText = document.getElementById('feedbackText').value;
+    var rating = document.querySelectorAll('.fa-star.text-yellow-400').length;
+    console.log('Feedback:', { rating: rating, feedback: feedbackText });
     showSuccess('तपाईंको प्रतिक्रियाको लागि धन्यवाद!');
-
-    // Clear feedback form
     document.getElementById('feedbackText').value = '';
     rateService(0);
 }
 
-// Start new document
 function startNew() {
     selectedDocument = null;
-    selectedInputMethod = null;
+    selectedInputMethod = 'text';
     formData = {};
+    // Clear field states
+    Object.keys(fieldStates).forEach(function (k) { delete fieldStates[k]; });
 
     var form = document.getElementById('documentForm');
     if (form) form.reset();
-
     var downloadBtn = document.getElementById('downloadBtn');
     if (downloadBtn) downloadBtn.classList.add('hidden');
-
     goToStep(1);
 }
 
-// Fill form from transcription (basic implementation)
-function fillFormFromTranscription(text) {
-    // This is a very basic implementation
-    // In production, you would use NLP to extract specific information
-
-    var voiceEl = document.getElementById('voiceInterface');
-    var textFormEl = document.getElementById('textForm');
-    if (voiceEl) voiceEl.classList.add('hidden');
-    if (textFormEl) textFormEl.classList.remove('hidden');
-
-    // Try to auto-fill some fields based on keywords
-    const lowerText = text.toLowerCase();
-
-    // Example: Look for names (very basic pattern matching)
-    const namePattern = /नाम[:\s]+([^\n]+)/i;
-    const nameMatch = text.match(namePattern);
-    if (nameMatch) {
-        const nameField = document.querySelector('[id*="name"]');
-        if (nameField) {
-            nameField.value = nameMatch[1].trim();
-        }
-    }
-
-    var transcriptionResult = document.getElementById('transcriptionResult');
-    if (!transcriptionResult) return;
-    transcriptionResult.innerHTML = `
-        <div class="mb-4">
-            <strong>पहिचानिएको पाठ:</strong>
-            <p class="mt-2">${text}</p>
-        </div>
-        <div class="text-sm text-gray-600">
-            कृपया माथिको जानकारीअनुसार फारम भर्नुहोस् वा सच्याउनुहोस्।
-        </div>
-    `;
-    transcriptionResult.classList.remove('hidden');
-}
-
-// Language toggle handler
-function handleLanguageToggle(e) {
-    const isChecked = e.target.checked;
-    if (isChecked) {
-        console.log('English to Nepali translation enabled');
-    } else {
-        console.log('English to Nepali translation disabled');
+// =====================================================
+//  LEGACY GLOBAL VOICE / CANVAS COMPAT
+//  (kept for backward compat with old HTML onclick)
+// =====================================================
+function toggleRecording() {
+    // Find first text field and toggle its voice
+    var firstFieldId = Object.keys(fieldStates)[0];
+    if (firstFieldId) {
+        var state = fieldStates[firstFieldId];
+        if (state.isRecording) stopFieldVoiceInput(firstFieldId);
+        else startFieldVoiceInput(firstFieldId);
     }
 }
+function clearCanvas() { clearModalCanvas(); }
+function recognizeHandwriting() { submitFieldCanvas(); }
 
-// Expose all handlers used by HTML onclick so they work in every environment
+// =====================================================
+//  EXPOSE ALL HANDLERS FOR HTML onclick
+// =====================================================
 window.selectDocument = selectDocument;
 window.selectInputMethod = selectInputMethod;
 window.toggleRecording = toggleRecording;
@@ -1019,3 +1328,10 @@ window.downloadPDF = downloadPDF;
 window.startNew = startNew;
 window.rateService = rateService;
 window.submitFeedback = submitFeedback;
+window.openFieldCanvas = openFieldCanvas;
+window.closeFieldCanvas = closeFieldCanvas;
+window.clearModalCanvas = clearModalCanvas;
+window.submitFieldCanvas = submitFieldCanvas;
+window.goToStep = goToStep;
+window.goToStepSafe = goToStepSafe;
+window.goBackToForm = goBackToForm;
