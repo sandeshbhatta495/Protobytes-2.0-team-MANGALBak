@@ -1,149 +1,366 @@
-# Nepali Speech-to-Text (STT)
+# Sarkari-Sarathi — AI Digital Scribe for Local Government (Nepal)
 
-A speech-to-text system for the Nepali language using OpenAI's Whisper model and DistilBERT for Nepali NLP tasks.
+<div align="center">
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Python](https://img.shields.io/badge/python-3.8+-green.svg)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-teal.svg)
+![Whisper](https://img.shields.io/badge/Whisper-Nepali%20Fine--tuned-orange.svg)
+
+**एक AI-संचालित डिजिटल स्क्राइब जसले नेपाली नागरिकहरूलाई सरकारी कागजातहरू सजिलै उत्पन्न गर्न मद्दत गर्दछ।**
+
+*An AI-powered digital scribe helping Nepali citizens easily generate government documents.*
+
+[Features](#-features) • [Demo](#-quick-start) • [Installation](#-installation) • [API](#-api-endpoints) • [Contributing](#-contributing)
+
+</div>
+
+---
 
 ## Overview
 
-This project provides:
-- **Speech Recognition**: Transcribe Nepali audio to text using OpenAI Whisper
-- **Nepali Language Model**: DistilBERT base model fine-tuned for Nepali (`Sakonii/distilbert-base-nepali`)
+**Sarkari-Sarathi** is a comprehensive document generation system designed for Nepal's local government services. It combines:
 
-## Models Used
+- **Nepali Speech Recognition** — Fine-tuned Whisper model for accurate Nepali ASR
+- **Handwriting Recognition** — Free-form writing input with AI-powered text extraction
+- **AI Document Generation** — RAG-based template filling using Google Gemini
+- **Print-Ready PDF Output** — Official government format documents
 
+## 🎯 Features
+
+### Multi-Modal Input Support
+| Input Method | Description | Technology |
+|--------------|-------------|------------|
+| 🎤 **Voice Typing** | Speak in Nepali, get text | Fine-tuned Whisper ASR |
+| ✍️ **Free Handwriting** | Draw/write on canvas | Gemini Vision AI |
+| ⌨️ **Text Input** | Direct keyboard entry | Standard forms |
+
+### Supported Government Documents
+
+#### Civil Registration
+- जन्म दर्ता (Birth Registration)
+- मृत्यु दर्ता (Death Registration)
+- विवाह दर्ता (Marriage Registration)
+- सम्बन्धविच्छेद (Divorce Registration)
+
+#### Recommendation Letters
+- बसाइसराई प्रमाणपत्र (Migration Certificate)
+- बसोबास प्रमाणपत्र (Residence Certificate)
+
+#### Infrastructure & Utilities
+- विद्युत जडान (Electricity Connection)
+- खानेपानी जडान (Water Connection)
+- बाटो पहुँच (Road Access)
+
+### Key Highlights
+- ✅ **No Login Required** — Stateless, session-based operation
+- ✅ **Elder-Friendly UI** — Simple, guided step-by-step interface
+- ✅ **Bilingual Support** — Nepali and English with transliteration
+- ✅ **32% WER Accuracy** — Fine-tuned Nepali Whisper model
+- ✅ **Offline ASR Fallback** — Works even without internet for speech recognition
+
+## 🛠️ Technology Stack
+
+### Backend
+| Technology | Purpose |
+|------------|---------|
+| **FastAPI** | REST API framework |
+| **Python 3.8+** | Core runtime |
+| **OpenAI Whisper** | Speech recognition (fallback) |
+| **Fine-tuned Nepali Whisper** | Primary ASR model |
+| **Google Gemini 2.0 Flash** | AI document generation & handwriting |
+| **ReportLab** | PDF generation |
+| **PyDub / FFmpeg** | Audio processing |
+| **Transformers (HuggingFace)** | Model inference |
+
+### Frontend
+| Technology | Purpose |
+|------------|---------|
+| **HTML5 / CSS3** | Structure & styling |
+| **Tailwind CSS** | Responsive design |
+| **JavaScript (Vanilla)** | Interactive features |
+| **Canvas API** | Handwriting input |
+| **MediaRecorder API** | Voice recording |
+
+### AI Models Used
 | Model | Purpose | Source |
 |-------|---------|--------|
-| `openai/whisper-small` | Automatic Speech Recognition | Hugging Face |
-| `Sakonii/distilbert-base-nepali` | Nepali NLP (Fill-Mask) | Hugging Face |
+| `amitpant7/Nepali-Automatic-Speech-Recognition` | Primary Nepali ASR | HuggingFace |
+| `openai/whisper-small` | Fallback ASR | HuggingFace |
+| `gemini-2.0-flash` | Document generation & OCR | Google AI |
+| `Sakonii/distilbert-base-nepali` | Nepali NLP | HuggingFace |
 
-## Requirements
+## 🏗️ Architecture
 
-### Dependencies
-
-```bash
-pip install transformers torch soundfile numpy gradio
+```
+┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+│     Frontend        │    │      Backend        │    │    AI Services      │
+│    (HTML/JS)        │◄──►│     (FastAPI)       │◄──►│                     │
+│                     │    │                     │    │  • Nepali Whisper   │
+│  • Voice Recording  │    │  • Audio Processing │    │  • Gemini 2.0       │
+│  • Handwriting      │    │  • RAG Templates    │    │  • Vision AI        │
+│  • Form UI          │    │  • PDF Generation   │    │                     │
+└─────────────────────┘    └─────────────────────┘    └─────────────────────┘
 ```
 
-### System Requirements
+## 📁 Project Structure
 
-- **FFmpeg**: Required for audio conversion
-  ```bash
-  # Ubuntu/Debian
-  apt-get install ffmpeg
-  
-  # Windows (via chocolatey)
-  choco install ffmpeg
-  ```
-- **GPU**: CUDA-compatible GPU recommended for faster inference
-- **Python**: 3.8+
-
-## Usage
-
-### Speech-to-Text Transcription
-
-```python
-import soundfile as sf
-import torch
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
-
-# Load model
-model_id = "openai/whisper-small"
-processor = WhisperProcessor.from_pretrained(model_id)
-model = WhisperForConditionalGeneration.from_pretrained(model_id)
-
-# Use GPU if available
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model = model.to(device)
-
-# Load and process audio
-audio, sr = sf.read("your_audio.wav", dtype="float32")
-input_features = processor(audio, sampling_rate=sr, return_tensors="pt").input_features
-input_features = input_features.to(device)
-
-# Generate transcription
-predicted_ids = model.generate(input_features)
-transcription = processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
-print(transcription)
+```
+Sarkari-Sarathi/
+├── backend/
+│   ├── main.py                  # FastAPI application
+│   ├── nepali_asr.py            # Custom Nepali ASR module
+│   ├── requirements.txt         # Python dependencies
+│   ├── templates/               # Document templates (JSON)
+│   │   ├── birth_registration.json
+│   │   ├── death_registration.json
+│   │   ├── marriage_registration.json
+│   │   ├── divorce_registration.json
+│   │   ├── migration_certificate.json
+│   │   ├── residence_certificate.json
+│   │   ├── electricity_connection.json
+│   │   ├── water_connection.json
+│   │   └── road_access.json
+│   ├── generated_documents/     # Output PDFs
+│   └── static/                  # Static assets & fonts
+├── frontend/
+│   ├── index.html               # Main application UI
+│   └── script.js                # Frontend logic
+├── Nepali_speech_to_text/       # ASR training & inference
+│   ├── src/
+│   │   ├── train.py             # Model training
+│   │   ├── inference.py         # Inference utilities
+│   │   └── utils.py             # Helper functions
+│   ├── notebook/                # Jupyter notebooks
+│   └── dataset/                 # Training data
+└── README.md                    # This file
 ```
 
-### Using Pipeline (Simple Method)
+## 🚀 Installation
 
+### Prerequisites
+- Python 3.8+
+- FFmpeg (auto-installed via imageio-ffmpeg)
+- CUDA-compatible GPU (recommended)
+
+### Quick Start
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/yourusername/sarkari-sarathi.git
+   cd sarkari-sarathi
+   ```
+
+2. **Setup backend**
+   ```bash
+   cd backend
+   python -m venv venv
+   
+   # Windows
+   venv\Scripts\activate
+   
+   # Linux/Mac
+   source venv/bin/activate
+   
+   pip install -r requirements.txt
+   ```
+
+3. **Configure environment**
+   ```bash
+   cp .env.example .env.config
+   # Edit .env.config and add your GEMINI_API_KEY
+   ```
+
+4. **Start the server**
+   ```bash
+   python main.py
+   ```
+
+5. **Open the application**
+   ```
+   http://localhost:8000/app
+   ```
+
+### Environment Variables
+
+Create `.env.config` in the backend directory:
+
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+HOST=0.0.0.0
+PORT=8000
+MAX_FILE_SIZE=10485760
+OUTPUT_DIR=generated_documents
+LOG_LEVEL=INFO
+```
+
+## 📡 API Endpoints
+
+### Document Operations
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/document-types` | List available document types |
+| `GET` | `/template/{type}` | Get template for document type |
+| `POST` | `/generate-document` | Generate PDF document |
+| `GET` | `/download-document/{filename}` | Download generated PDF |
+
+### Audio Processing
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/transcribe-audio` | Transcribe voice to Nepali text |
+| `GET` | `/asr-status` | Check ASR model status |
+
+### Text & Image Processing
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/transliterate` | Convert English to Nepali |
+| `POST` | `/recognize-handwriting` | Extract text from handwriting |
+
+### Locations
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/locations` | Get Nepal location data |
+
+## 💻 Usage Examples
+
+### Voice Transcription (Python)
 ```python
-from transformers import pipeline
+import requests
 
-whisper_model = pipeline(
-    task="automatic-speech-recognition",
-    model="openai/whisper-small",
-    device=0  # GPU
+with open("audio.wav", "rb") as f:
+    response = requests.post(
+        "http://localhost:8000/transcribe-audio",
+        files={"file": f}
+    )
+    print(response.json()["text"])
+```
+
+### Generate Document
+```python
+import requests
+
+data = {
+    "document_type": "birth_registration",
+    "user_data": {
+        "child_name": "राम बहादुर",
+        "birth_date": "२०८०-०१-१५",
+        "father_name": "हरि बहादुर"
+    }
+}
+
+response = requests.post(
+    "http://localhost:8000/generate-document",
+    json=data
 )
-
-result = whisper_model({"sampling_rate": 16000, "array": audio})
-print(result["text"])
 ```
 
-### Nepali Language Model (Fill-Mask)
+## 🔊 Speech Recognition Pipeline
 
-```python
-from transformers import pipeline
-
-pipe = pipeline("fill-mask", model="Sakonii/distilbert-base-nepali")
-result = pipe("नेपाल एक [MASK] देश हो।")
-print(result)
+```
+Audio Input → WebM to WAV Conversion → Nepali ASR Model → Text Output
+                                              ↓
+                              (Fallback) Generic Whisper
+                                              ↓
+                              (Fallback) Gemini Audio API
 ```
 
-## Audio Preprocessing
+### Audio Preprocessing
 
-For best results, convert audio to mono 16kHz WAV format:
-
+For best results with manual audio files:
 ```bash
 ffmpeg -i input.wav -ar 16000 -ac 1 -c:a pcm_s16le output.wav
 ```
 
-Or in Python:
+## 🎨 UI/UX Features
 
-```python
-import subprocess
+- **Step-by-step guided flow** — Easy navigation for all users
+- **Voice recording with visual feedback** — Real-time recording indicator
+- **Free handwriting canvas** — Draw Nepali characters naturally
+- **Real-time transliteration** — Type in English, get Nepali
+- **Document preview** — Review before generating
+- **Print-ready PDF output** — A4 format with proper letterhead
+- **Service rating system** — Feedback collection
 
-command = [
-    "ffmpeg", "-i", "input.wav",
-    "-acodec", "pcm_s16le",
-    "-ar", "16000",
-    "-ac", "1",
-    "output.wav", "-y"
-]
-subprocess.run(command, check=True)
+## 🔒 Security & Privacy
+
+- No permanent data storage
+- Session-based operation only
+- Automatic file cleanup after download
+- No biometric data processing
+- Secure API endpoints with CORS
+
+## 🧑‍💻 Development
+
+### Adding New Document Templates
+
+1. Create JSON in `backend/templates/`:
+```json
+{
+  "name": "Document Name",
+  "name_ne": "कागजात नाम",
+  "category": "civil_registration",
+  "required_fields": ["field1", "field2"],
+  "optional_fields": ["field3"],
+  "content_template": "Template with {placeholders}",
+  "instructions": ["Step 1", "Step 2"]
+}
 ```
 
-## Google Colab Integration
+2. Restart the server to load new template
 
-The notebook includes support for Google Colab with Drive mounting:
-
-```python
-from google.colab import drive
-drive.mount('/content/drive')
+### Running Tests
+```bash
+cd backend
+python -m pytest tests/
 ```
 
-## File Structure
+## 🐳 Deployment
 
+### Docker
+```bash
+docker build -t sarkari-sarathi .
+docker run -p 8000:8000 -e GEMINI_API_KEY=your_key sarkari-sarathi
 ```
-Nepali STT/
-├── distilbert_base_nepali.ipynb   # Main notebook
-└── README.md                       # This file
-```
 
-## Notes
+### Production Checklist
+- [ ] Use HTTPS with SSL
+- [ ] Enable rate limiting
+- [ ] Set up monitoring/logging
+- [ ] Configure proper CORS origins
+- [ ] Use production WSGI server (gunicorn)
 
-- Audio files should be in WAV format (16kHz, mono) for optimal results
-- GPU acceleration significantly improves transcription speed
-- Hugging Face token may be required for certain models (`huggingface_hub.login()`)
+## 🤝 Contributing
 
-## License
+1. Fork the repository
+2. Create feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-This project uses models from Hugging Face. Please refer to individual model licenses:
-- [Whisper](https://huggingface.co/openai/whisper-small) - MIT License
-- [DistilBERT Nepali](https://huggingface.co/Sakonii/distilbert-base-nepali) - Apache 2.0
+## 📄 License
 
-## Acknowledgments
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-- OpenAI for the Whisper model
-- Sakonii for the DistilBERT Nepali model
-- Hugging Face Transformers library
+### Model Licenses
+- [Whisper](https://huggingface.co/openai/whisper-small) — MIT License
+- [DistilBERT Nepali](https://huggingface.co/Sakonii/distilbert-base-nepali) — Apache 2.0
+- [Nepali ASR](https://huggingface.co/amitpant7/Nepali-Automatic-Speech-Recognition) — Apache 2.0
+
+## 🙏 Acknowledgments
+
+- **OpenAI** — Whisper speech recognition model
+- **Google** — Gemini AI for document generation
+- **HuggingFace** — Transformers library and model hosting
+- **amitpant7** — Fine-tuned Nepali ASR model
+- **Sakonii** — DistilBERT Nepali model
+- **Nepal Government** — Document format references
+
+---
+
+<div align="center">
+
+**सरकारी-सारथी** — Digital Nepal Initiative 🇳🇵
+
+Made with ❤️ for Nepal
+
+</div>
