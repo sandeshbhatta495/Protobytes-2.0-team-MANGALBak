@@ -202,10 +202,16 @@ function validateAllFieldsNepali() {
     const form = document.getElementById('documentForm');
     if (!form) return issues;
     form.querySelectorAll('input[type="text"], textarea').forEach(input => {
+        const id = input.id || '';
+        const name = input.name || '';
+        // Skip fields that are explicitly marked as English variants (e.g., child_name_en)
+        if (id.endsWith('_en') || name.endsWith('_en')) {
+            return;
+        }
         const val = input.value.trim();
         if (val && !isNepaliText(val)) {
-            const state = fieldStates[input.id];
-            issues.push({ fieldId: input.id, label: state ? state.label : input.id, value: val });
+            const state = fieldStates[id];
+            issues.push({ fieldId: id, label: state ? state.label : id, value: val });
         }
     });
     return issues;
@@ -654,6 +660,7 @@ function setFieldMode(fieldId, mode) {
 // =====================================================
 function setupFieldTransliteration(fieldId, input) {
     var composingWord = '';
+    var composingWordStart = -1;
 
     input.addEventListener('keydown', function (e) {
         if (e.key === ' ' || e.key === 'Enter') {
@@ -674,6 +681,7 @@ function setupFieldTransliteration(fieldId, input) {
                 }
 
                 composingWord = '';
+                composingWordStart = -1;
                 hideTranslitHint(fieldId);
 
                 var state = fieldStates[fieldId];
@@ -697,24 +705,27 @@ function setupFieldTransliteration(fieldId, input) {
 
         if (currentWord && /^[a-zA-Z]+$/.test(currentWord)) {
             composingWord = currentWord;
+            composingWordStart = lastBreak + 1; // Track the start position
             var preview = clientTransliterate(currentWord);
             showTranslitHint(fieldId, preview);
         } else {
             composingWord = '';
+            composingWordStart = -1;
             hideTranslitHint(fieldId);
         }
     });
 
-    // Convert remaining word on blur
+    // Convert remaining word on blur using tracked position
     input.addEventListener('blur', function () {
-        if (composingWord) {
+        if (composingWord && composingWordStart !== -1) {
             var nepali = clientTransliterate(composingWord);
             var val = input.value;
-            var wordStart = val.lastIndexOf(composingWord);
-            if (wordStart !== -1) {
-                input.value = val.substring(0, wordStart) + nepali + val.substring(wordStart + composingWord.length);
+            // Verify the word is still at the tracked position
+            if (val.substring(composingWordStart, composingWordStart + composingWord.length) === composingWord) {
+                input.value = val.substring(0, composingWordStart) + nepali + val.substring(composingWordStart + composingWord.length);
             }
             composingWord = '';
+            composingWordStart = -1;
             hideTranslitHint(fieldId);
             var state = fieldStates[fieldId];
             if (state) state.value = input.value;
@@ -895,9 +906,15 @@ async function submitFieldCanvas() {
     var ctx = canvas.getContext('2d');
     var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     var hasContent = false;
+    
+    // Check for any pixel with alpha > 0 (meaning something was drawn)
+    // Previous bug: was checking for non-black pixels, but user draws in black!
     for (var i = 0; i < imgData.data.length; i += 4) {
-        if (imgData.data[i] !== 0 || imgData.data[i + 1] !== 0 || imgData.data[i + 2] !== 0) {
-            if (imgData.data[i + 3] > 0) { hasContent = true; break; }
+        // imgData.data[i+3] is the alpha channel
+        // Any pixel with alpha > 0 means something was drawn there
+        if (imgData.data[i + 3] > 10) {
+            hasContent = true;
+            break;
         }
     }
 
@@ -1244,6 +1261,16 @@ function downloadPDF(pdfPath) {
     document.body.removeChild(link);
 }
 
+function escapeHtml(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 function showDocumentPreview(content) {
     var previewDiv = document.getElementById('documentPreview');
     if (typeof content === 'object' && content !== null) {
@@ -1251,7 +1278,7 @@ function showDocumentPreview(content) {
         html += '<table class="w-full text-sm">';
         for (var key in content) {
             if (content[key]) {
-                html += '<tr class="border-b"><td class="py-2 pr-4 font-medium text-gray-600">' + key + '</td><td class="py-2">' + content[key] + '</td></tr>';
+                html += '<tr class="border-b"><td class="py-2 pr-4 font-medium text-gray-600">' + escapeHtml(key) + '</td><td class="py-2">' + escapeHtml(content[key]) + '</td></tr>';
             }
         }
         html += '</table></div></div>';
@@ -1289,6 +1316,10 @@ function startNew() {
     selectedDocument = null;
     selectedInputMethod = 'text';
     formData = {};
+    // Clear window.formData to prevent stale data in navigation guard
+    if (typeof window !== 'undefined') {
+        window.formData = null;
+    }
     // Clear field states
     Object.keys(fieldStates).forEach(function (k) { delete fieldStates[k]; });
 
