@@ -8,8 +8,15 @@ import os
 # Configure FFmpeg path from imageio_ffmpeg before importing audio libraries
 try:
     import imageio_ffmpeg
-    ffmpeg_path = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
-    os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ.get("PATH", "")
+    import shutil
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_dir = os.path.dirname(ffmpeg_exe)
+    # Create a copy named ffmpeg.exe if it doesn't exist (libraries look for 'ffmpeg')
+    ffmpeg_standard = os.path.join(ffmpeg_dir, "ffmpeg.exe")
+    if not os.path.exists(ffmpeg_standard) and os.path.exists(ffmpeg_exe):
+        shutil.copy2(ffmpeg_exe, ffmpeg_standard)
+    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+    os.environ["FFMPEG_BINARY"] = ffmpeg_standard if os.path.exists(ffmpeg_standard) else ffmpeg_exe
 except ImportError:
     pass  # FFmpeg should be in system PATH
 

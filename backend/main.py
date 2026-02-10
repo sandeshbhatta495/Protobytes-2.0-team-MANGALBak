@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
@@ -10,8 +10,16 @@ import json
 # Configure FFmpeg path from imageio_ffmpeg before importing audio libraries
 try:
     import imageio_ffmpeg
-    ffmpeg_path = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
-    os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ.get("PATH", "")
+    import shutil
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_dir = os.path.dirname(ffmpeg_exe)
+    # Create a copy named ffmpeg.exe if it doesn't exist (libraries look for 'ffmpeg')
+    ffmpeg_standard = os.path.join(ffmpeg_dir, "ffmpeg.exe")
+    if not os.path.exists(ffmpeg_standard) and os.path.exists(ffmpeg_exe):
+        shutil.copy2(ffmpeg_exe, ffmpeg_standard)
+    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
+    # Also set FFMPEG_BINARY for pydub
+    os.environ["FFMPEG_BINARY"] = ffmpeg_standard if os.path.exists(ffmpeg_standard) else ffmpeg_exe
 except ImportError:
     pass  # FFmpeg should be in system PATH
 
@@ -149,6 +157,27 @@ async def startup_event():
 async def root():
     return {"message": "Sarkari-Sarathi API is running"}
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint with model status"""
+    return {
+        "status": "ok",
+        "models": {
+            "nepali_asr": {
+                "loaded": nepali_asr is not None and nepali_asr.pipe is not None,
+                "model_name": nepali_asr.model_name if nepali_asr else None
+            },
+            "whisper": {
+                "loaded": whisper_model is not None
+            },
+            "gemini": {
+                "loaded": gemini_model is not None,
+                "api_key_set": bool(os.getenv("GEMINI_API_KEY"))
+            }
+        },
+        "templates_loaded": len(templates)
+    }
+
 @app.get("/favicon.ico")
 async def favicon():
     """Serve favicon"""
@@ -211,12 +240,14 @@ async def transcribe_audio(audio: UploadFile = File(...)):
         
         transcription = None
         language_detected = "ne"
+        model_used = None  # Track which model actually produced the transcription
         
         # Try Nepali ASR first
         if nepali_asr and nepali_asr.pipe is not None:
             try:
                 logger.info("Using Nepali ASR model for transcription")
                 transcription = nepali_asr.transcribe_audio_file(wav_path)
+                model_used = "nepali_asr"
                 logger.info(f"Nepali ASR transcription successful: {transcription[:50]}...")
             except Exception as e:
                 logger.warning(f"Nepali ASR failed: {e}")
@@ -228,6 +259,7 @@ async def transcribe_audio(audio: UploadFile = File(...)):
                 result = whisper_model.transcribe(wav_path)
                 transcription = result["text"]
                 language_detected = result.get("language", "ne")
+                model_used = "whisper_fallback"
                 logger.info(f"Whisper transcription successful: {transcription[:50]}...")
             except Exception as e:
                 logger.error(f"Whisper fallback also failed: {e}")
@@ -238,36 +270,42 @@ async def transcribe_audio(audio: UploadFile = File(...)):
                 logger.info("Falling back to Gemini for audio transcription")
                 # Read the wav file and send to Gemini
                 audio_file_path = wav_path if os.path.exists(wav_path) else tmp_file_path
+                
+                # Gemini needs audio as a file upload or inline data
+                # Use the google.generativeai File API for better handling
+                import base64 as b64
+                
                 with open(audio_file_path, 'rb') as af:
                     audio_bytes = af.read()
                 
-                import base64 as b64
                 audio_b64 = b64.b64encode(audio_bytes).decode('utf-8')
                 
-                # Use Gemini's audio understanding
+                # Use Gemini's audio understanding with proper inline_data format
                 prompt = """यो अडियो फाइलमा नेपाली भाषामा बोलिएको छ। कृपया सुन्नुहोस् र शुद्ध नेपाली युनिकोडमा लेख्नुहोस्।
 केवल बोलिएको पाठ मात्र लेख्नुहोस्, अरू केही नलेख्नुहोस्।"""
                 
+                # Create inline data part for Gemini
                 audio_part = {
-                    "mime_type": "audio/wav",
-                    "data": audio_b64
+                    "inline_data": {
+                        "mime_type": "audio/wav",
+                        "data": audio_b64
+                    }
                 }
-                response = gemini_model.generate_content([prompt, audio_part])
-                transcription = response.text.strip()
+                
+                logger.info(f"Sending {len(audio_bytes)} bytes of audio to Gemini...")
+                response = await asyncio.to_thread(gemini_model.generate_content, [prompt, audio_part])
+                transcription = response.text.strip() if response.text else ""
+                
                 if transcription:
+                    model_used = "gemini_audio"
                     logger.info(f"Gemini audio transcription: {transcription[:50]}...")
+                else:
+                    logger.warning("Gemini returned empty transcription")
             except Exception as e:
-                logger.warning(f"Gemini audio fallback also failed: {e}")
+                logger.warning(f"Gemini audio fallback also failed: {e}", exc_info=True)
         
         if not transcription:
             raise HTTPException(status_code=500, detail="सबै ट्रान्सक्रिप्शन विधिहरू असफल भए। कृपया स्पष्ट रूपमा बोल्नुहोस् र पुनः प्रयास गर्नुहोस्।")
-        
-        # Apply grammar correction to transcription
-        model_used = "gemini_audio"
-        if nepali_asr and nepali_asr.pipe is not None:
-            model_used = "nepali_asr"
-        elif whisper_model:
-            model_used = "whisper_fallback"
         
         # Post-process: correct Nepali grammar
         corrected_transcription = await correct_nepali_grammar(transcription)
@@ -515,7 +553,8 @@ async def correct_nepali_grammar(text: str, context: str = "") -> str:
             f"पाठ: {text}\n\n"
             "शुद्ध पाठ:"
         )
-        response = gemini_model.generate_content(prompt)
+        # Run synchronous Gemini call in threadpool to avoid blocking the event loop
+        response = await asyncio.to_thread(gemini_model.generate_content, prompt)
         corrected = response.text.strip()
         # Sanity check: if Gemini returned something wildly different or empty, keep original
         if not corrected or len(corrected) > len(text) * 3:
@@ -527,9 +566,55 @@ async def correct_nepali_grammar(text: str, context: str = "") -> str:
         return text
 
 
+# Simple in-memory rate limiter for grammar correction endpoint
+_grammar_rate_limit_store: Dict[str, list] = {}
+GRAMMAR_RATE_LIMIT_MAX_REQUESTS = 10  # Max requests per window
+GRAMMAR_RATE_LIMIT_WINDOW_SECONDS = 60  # Time window in seconds
+MAX_GRAMMAR_TEXT_LENGTH = 5000  # Maximum text length for grammar correction
+
+
+def check_rate_limit(client_ip: str) -> bool:
+    """Check if client is within rate limit. Returns True if allowed, False if limited."""
+    now = datetime.now().timestamp()
+    window_start = now - GRAMMAR_RATE_LIMIT_WINDOW_SECONDS
+    
+    if client_ip not in _grammar_rate_limit_store:
+        _grammar_rate_limit_store[client_ip] = []
+    
+    # Clean old entries
+    _grammar_rate_limit_store[client_ip] = [
+        ts for ts in _grammar_rate_limit_store[client_ip] if ts > window_start
+    ]
+    
+    # Check limit
+    if len(_grammar_rate_limit_store[client_ip]) >= GRAMMAR_RATE_LIMIT_MAX_REQUESTS:
+        return False
+    
+    # Record this request
+    _grammar_rate_limit_store[client_ip].append(now)
+    return True
+
+
 @app.post("/correct-grammar")
-async def correct_grammar_endpoint(request: GrammarCorrectionRequest):
+async def correct_grammar_endpoint(request: GrammarCorrectionRequest, req: Request):
     """Correct Nepali grammar in the given text using Gemini AI"""
+    # Get client IP for rate limiting
+    client_ip = req.client.host if req.client else "unknown"
+    
+    # Check rate limit
+    if not check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=429, 
+            detail="Too many requests. Please wait before trying again."
+        )
+    
+    # Validate text length
+    if len(request.text) > MAX_GRAMMAR_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Text too long. Maximum {MAX_GRAMMAR_TEXT_LENGTH} characters allowed."
+        )
+    
     corrected = await correct_nepali_grammar(request.text, request.context)
     return {"original": request.text, "corrected": corrected}
 
@@ -554,24 +639,38 @@ async def recognize_handwriting(request: HandwritingRequest):
         image_bytes = base64.b64decode(image_data)
         image = Image.open(io.BytesIO(image_bytes))
         
+        logger.info(f"Received image: mode={image.mode}, size={image.size}")
+        
         # Verify image has actual content (not blank)
-        img_array = list(image.getdata())
-        # For RGBA images, check if there are non-white, non-transparent pixels
+        # Check for any pixel with significant alpha (drawn content)
         has_content = False
+        img_array = list(image.getdata())
         for pixel in img_array:
             if len(pixel) == 4:  # RGBA
                 r, g, b, a = pixel
-                if a > 10 and (r < 240 or g < 240 or b < 240):
+                # Any pixel with alpha > 10 means something was drawn
+                if a > 10:
                     has_content = True
                     break
             elif len(pixel) == 3:  # RGB
                 r, g, b = pixel
+                # For non-RGBA, check for non-white pixels
                 if r < 240 or g < 240 or b < 240:
                     has_content = True
                     break
         
         if not has_content:
+            logger.warning("Canvas appears empty - no drawn content detected")
             return {"text": "", "success": False, "detail": "Canvas appears empty"}
+        
+        # Convert RGBA to RGB with white background for better recognition
+        if image.mode == 'RGBA':
+            # Create white background
+            background = Image.new('RGB', image.size, (255, 255, 255))
+            # Paste the image using alpha channel as mask
+            background.paste(image, mask=image.split()[3])
+            image = background
+            logger.info("Converted RGBA to RGB with white background")
         
         # Use Gemini Vision to recognize handwriting — focused Nepali prompt
         prompt = """यो छविमा हातले लेखिएको नेपाली (देवनागरी लिपि) पाठ छ।
@@ -583,22 +682,25 @@ async def recognize_handwriting(request: HandwritingRequest):
 4. कुनै व्याख्या वा थप टिप्पणी नलेख्नुहोस्
 5. शुद्ध नेपाली व्याकरणमा लेख्नुहोस्"""
         
-        response = gemini_model.generate_content([prompt, image])
+        logger.info("Sending image to Gemini for recognition...")
+        response = await asyncio.to_thread(gemini_model.generate_content, [prompt, image])
         recognized_text = response.text.strip()
+        
+        logger.info(f"Gemini raw response: {recognized_text[:200] if recognized_text else '(empty)'}")
         
         # Remove any markdown formatting Gemini might add
         recognized_text = recognized_text.strip('`').strip('*').strip()
         if recognized_text.startswith('```'):
             recognized_text = recognized_text.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
         
-        logger.info(f"Handwriting recognition result: {recognized_text[:100]}")
+        logger.info(f"Handwriting recognition result: {recognized_text[:100] if recognized_text else '(empty)'}")
         
         return {"text": recognized_text, "success": True}
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Handwriting recognition error: {e}")
+        logger.error(f"Handwriting recognition error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Recognition failed: {str(e)}")
 
 @app.post("/generate-document")
