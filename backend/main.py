@@ -232,8 +232,45 @@ async def transcribe_audio(audio: UploadFile = File(...)):
             except Exception as e:
                 logger.error(f"Whisper fallback also failed: {e}")
         
+        # Fallback to Gemini if both ASR models fail
+        if not transcription and gemini_model:
+            try:
+                logger.info("Falling back to Gemini for audio transcription")
+                # Read the wav file and send to Gemini
+                audio_file_path = wav_path if os.path.exists(wav_path) else tmp_file_path
+                with open(audio_file_path, 'rb') as af:
+                    audio_bytes = af.read()
+                
+                import base64 as b64
+                audio_b64 = b64.b64encode(audio_bytes).decode('utf-8')
+                
+                # Use Gemini's audio understanding
+                prompt = """यो अडियो फाइलमा नेपाली भाषामा बोलिएको छ। कृपया सुन्नुहोस् र शुद्ध नेपाली युनिकोडमा लेख्नुहोस्।
+केवल बोलिएको पाठ मात्र लेख्नुहोस्, अरू केही नलेख्नुहोस्।"""
+                
+                audio_part = {
+                    "mime_type": "audio/wav",
+                    "data": audio_b64
+                }
+                response = gemini_model.generate_content([prompt, audio_part])
+                transcription = response.text.strip()
+                if transcription:
+                    logger.info(f"Gemini audio transcription: {transcription[:50]}...")
+            except Exception as e:
+                logger.warning(f"Gemini audio fallback also failed: {e}")
+        
         if not transcription:
-            raise HTTPException(status_code=500, detail="All transcription methods failed")
+            raise HTTPException(status_code=500, detail="सबै ट्रान्सक्रिप्शन विधिहरू असफल भए। कृपया स्पष्ट रूपमा बोल्नुहोस् र पुनः प्रयास गर्नुहोस्।")
+        
+        # Apply grammar correction to transcription
+        model_used = "gemini_audio"
+        if nepali_asr and nepali_asr.pipe is not None:
+            model_used = "nepali_asr"
+        elif whisper_model:
+            model_used = "whisper_fallback"
+        
+        # Post-process: correct Nepali grammar
+        corrected_transcription = await correct_nepali_grammar(transcription)
         
         # Clean up temporary files
         for f in [tmp_file_path, wav_path]:
@@ -244,9 +281,11 @@ async def transcribe_audio(audio: UploadFile = File(...)):
                 pass
         
         return {
-            "transcription": transcription,
+            "transcription": corrected_transcription,
+            "raw_transcription": transcription,
             "language": language_detected,
-            "model_used": "nepali_asr" if nepali_asr and nepali_asr.pipe is not None else "whisper_fallback"
+            "model_used": model_used,
+            "grammar_corrected": corrected_transcription != transcription
         }
     
     except HTTPException:
@@ -455,12 +494,52 @@ def offline_transliterate(text: str) -> str:
 class HandwritingRequest(BaseModel):
     image: str  # Base64 encoded image data
 
+class GrammarCorrectionRequest(BaseModel):
+    text: str
+    context: str = ""  # optional field label / context
+
+
+async def correct_nepali_grammar(text: str, context: str = "") -> str:
+    """Post-process Nepali text for grammar correction using Gemini."""
+    if not gemini_model or not text or not text.strip():
+        return text
+    try:
+        ctx_hint = f" (यो फिल्ड: {context})" if context else ""
+        prompt = (
+            "तपाईंलाई नेपाली पाठ दिइएको छ। कृपया यसलाई शुद्ध नेपाली व्याकरणमा सच्याउनुहोस्।\n"
+            "- मात्रा, हलन्त, र विसर्ग ठीक गर्नुहोस्\n"
+            "- शब्द क्रम र विभक्ति मिलाउनुहोस्\n"
+            "- अर्थ नबिगार्नुहोस्, केवल व्याकरण सच्याउनुहोस्\n"
+            "- केवल सच्याइएको नेपाली पाठ मात्र फर्काउनुहोस्, अरू केही नलेख्नुहोस्\n"
+            f"{ctx_hint}\n\n"
+            f"पाठ: {text}\n\n"
+            "शुद्ध पाठ:"
+        )
+        response = gemini_model.generate_content(prompt)
+        corrected = response.text.strip()
+        # Sanity check: if Gemini returned something wildly different or empty, keep original
+        if not corrected or len(corrected) > len(text) * 3:
+            return text
+        logger.info(f"Grammar correction: '{text[:40]}' -> '{corrected[:40]}'")
+        return corrected
+    except Exception as e:
+        logger.warning(f"Grammar correction failed, returning original: {e}")
+        return text
+
+
+@app.post("/correct-grammar")
+async def correct_grammar_endpoint(request: GrammarCorrectionRequest):
+    """Correct Nepali grammar in the given text using Gemini AI"""
+    corrected = await correct_nepali_grammar(request.text, request.context)
+    return {"original": request.text, "corrected": corrected}
+
+
 @app.post("/recognize-handwriting")
 async def recognize_handwriting(request: HandwritingRequest):
     """Recognize handwritten text from canvas image using Gemini Vision"""
     try:
         if not gemini_model:
-            raise HTTPException(status_code=503, detail="AI model not available")
+            raise HTTPException(status_code=503, detail="AI model not available. Please set GEMINI_API_KEY in .env.config")
         
         # Extract base64 image data (remove data:image/png;base64, prefix if present)
         image_data = request.image
@@ -475,20 +554,49 @@ async def recognize_handwriting(request: HandwritingRequest):
         image_bytes = base64.b64decode(image_data)
         image = Image.open(io.BytesIO(image_bytes))
         
-        # Use Gemini Vision to recognize handwriting
-        prompt = """This is an image of handwritten text in Nepali (Devanagari script) or English. 
-Please carefully read and transcribe all the text you can see in the image.
-If the text is in Nepali, return it as Nepali text.
-If the text is in English, return it as English text.
-Only return the transcribed text, nothing else. If you cannot read the text clearly, return your best attempt."""
+        # Verify image has actual content (not blank)
+        img_array = list(image.getdata())
+        # For RGBA images, check if there are non-white, non-transparent pixels
+        has_content = False
+        for pixel in img_array:
+            if len(pixel) == 4:  # RGBA
+                r, g, b, a = pixel
+                if a > 10 and (r < 240 or g < 240 or b < 240):
+                    has_content = True
+                    break
+            elif len(pixel) == 3:  # RGB
+                r, g, b = pixel
+                if r < 240 or g < 240 or b < 240:
+                    has_content = True
+                    break
+        
+        if not has_content:
+            return {"text": "", "success": False, "detail": "Canvas appears empty"}
+        
+        # Use Gemini Vision to recognize handwriting — focused Nepali prompt
+        prompt = """यो छविमा हातले लेखिएको नेपाली (देवनागरी लिपि) पाठ छ।
+कृपया छविमा देखिएको सबै पाठ ध्यानपूर्वक पढ्नुहोस् र लेख्नुहोस्।
+नियमहरू:
+1. केवल पढिएको पाठ मात्र फर्काउनुहोस्
+2. यदि देवनागरी लिपि हो भने नेपाली युनिकोडमा लेख्नुहोस्  
+3. यदि English अक्षर देखिन्छ भने English मा नै राख्नुहोस्
+4. कुनै व्याख्या वा थप टिप्पणी नलेख्नुहोस्
+5. शुद्ध नेपाली व्याकरणमा लेख्नुहोस्"""
         
         response = gemini_model.generate_content([prompt, image])
         recognized_text = response.text.strip()
         
-        logger.info(f"Handwriting recognition result: {recognized_text[:100]}...")
+        # Remove any markdown formatting Gemini might add
+        recognized_text = recognized_text.strip('`').strip('*').strip()
+        if recognized_text.startswith('```'):
+            recognized_text = recognized_text.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
+        
+        logger.info(f"Handwriting recognition result: {recognized_text[:100]}")
         
         return {"text": recognized_text, "success": True}
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Handwriting recognition error: {e}")
         raise HTTPException(status_code=500, detail=f"Recognition failed: {str(e)}")
