@@ -431,6 +431,15 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
+    <!-- TensorFlow.js for offline handwriting recognition -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    
+    <!-- Offline Handwriting Recognition Modules -->
+    <script src="/static/handwriting/stroke_processor.js"></script>
+    <script src="/static/handwriting/ctc_decoder.js"></script>
+    <script src="/static/handwriting/handwriting.js"></script>
+    <script src="offline_handwriting.js"></script>
+    
     <script src="script.js"></script>
     <script>
         // Ensure app is usable: expose key functions if script loaded
