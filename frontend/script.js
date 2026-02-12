@@ -197,6 +197,11 @@ function isNepaliText(text) {
     return (nepaliCount / cleaned.length) >= 0.5;
 }
 
+// Helper to check if a field is for English input (should NOT be transliterated)
+function isEnglishField(fieldId) {
+    return fieldId && (fieldId.endsWith('_en') || fieldId.endsWith('_english') || fieldId.toLowerCase().includes('english'));
+}
+
 function validateAllFieldsNepali() {
     const issues = [];
     const form = document.getElementById('documentForm');
@@ -204,8 +209,8 @@ function validateAllFieldsNepali() {
     form.querySelectorAll('input[type="text"], textarea').forEach(input => {
         const id = input.id || '';
         const name = input.name || '';
-        // Skip fields that are explicitly marked as English variants (e.g., child_name_en)
-        if (id.endsWith('_en') || name.endsWith('_en')) {
+        // Skip fields that are explicitly marked as English variants
+        if (isEnglishField(id) || isEnglishField(name)) {
             return;
         }
         const val = input.value.trim();
@@ -253,6 +258,16 @@ document.addEventListener('DOMContentLoaded', function () {
         loadInitialData();
         setupEventListeners();
         setupModalCanvas();
+        
+        // Initialize Tesseract.js for handwriting recognition (async, non-blocking)
+        if (typeof TesseractHandwriting !== 'undefined' && TesseractHandwriting.isAvailable()) {
+            console.log('[Init] Pre-loading Tesseract.js OCR engine...');
+            TesseractHandwriting.init().then(function() {
+                console.log('[Init] Tesseract.js ready for handwriting recognition');
+            }).catch(function(err) {
+                console.warn('[Init] Tesseract.js init failed:', err);
+            });
+        }
     } catch (err) {
         console.error('App init error:', err);
     }
@@ -505,6 +520,9 @@ function createFieldElement(field, container) {
 
     // Determine if this is a text-type field that should get the input toolbar
     var isTextField = (field.type === 'text' || field.type === 'textarea') && field.type !== 'select';
+    
+    // Check if this field should skip transliteration (English fields)
+    var skipTranslit = isEnglishField(field.id);
 
     var input;
     if (field.type === 'select') {
@@ -572,18 +590,22 @@ function createFieldElement(field, container) {
         fieldDiv.appendChild(toolbar);
         fieldDiv.appendChild(input);
 
-        // Transliteration hint (shows preview as user types English)
-        var hint = document.createElement('div');
-        hint.id = 'hint_' + field.id;
-        hint.className = 'transliteration-hint';
-        hint.style.display = 'none';
-        fieldDiv.appendChild(hint);
+        // Transliteration hint (shows preview as user types English) - skip for English fields
+        if (!skipTranslit) {
+            var hint = document.createElement('div');
+            hint.id = 'hint_' + field.id;
+            hint.className = 'transliteration-hint';
+            hint.style.display = 'none';
+            fieldDiv.appendChild(hint);
+        }
 
         // Register in field state store
         getOrCreateFieldState(field.id, input, field.label);
 
-        // Setup inline keyboard transliteration
-        setupFieldTransliteration(field.id, input);
+        // Setup inline keyboard transliteration - skip for English fields
+        if (!skipTranslit) {
+            setupFieldTransliteration(field.id, input);
+        }
     } else {
         fieldDiv.appendChild(input);
     }
@@ -929,61 +951,66 @@ async function submitFieldCanvas() {
 
     try {
         var recognizedText = '';
-        var offlineAvailable = typeof OfflineHandwriting !== 'undefined' && OfflineHandwriting.isOfflineAvailable();
         
-        // Try offline recognition first (if available)
-        if (offlineAvailable) {
+        // Use Tesseract.js for handwriting recognition
+        if (typeof TesseractHandwriting !== 'undefined' && TesseractHandwriting.isAvailable()) {
             try {
-                console.log('[Handwriting] Using offline recognition');
-                var offlineResult = await OfflineHandwriting.recognizeOffline('modalCanvas');
-                if (offlineResult && offlineResult.text) {
-                    recognizedText = offlineResult.text.trim();
-                    console.log('[Handwriting] Offline result:', recognizedText, 'confidence:', offlineResult.confidence);
+                console.log('[Handwriting] Using Tesseract.js OCR');
+                showToast('हस्तलेख पहिचान गर्दै... (पहिलो पटक केही समय लाग्छ)', 'info');
+                
+                var ocrResult = await TesseractHandwriting.recognize(canvas);
+                if (ocrResult && ocrResult.success && ocrResult.text) {
+                    recognizedText = ocrResult.text.trim();
+                    console.log('[Handwriting] Tesseract result:', recognizedText, 'confidence:', ocrResult.confidence);
+                } else if (ocrResult && !ocrResult.success) {
+                    console.warn('[Handwriting] Tesseract failed:', ocrResult.error);
                 }
-            } catch (offlineError) {
-                console.warn('[Handwriting] Offline failed:', offlineError);
+            } catch (ocrError) {
+                console.warn('[Handwriting] Tesseract error:', ocrError);
             }
         }
         
-        // Fall back to server API only if offline DID work but returned empty
-        // Skip server fallback if offline model isn't loaded (to avoid API quota errors)
-        if (!recognizedText && offlineAvailable) {
-            // Offline was available but didn't recognize - try server
-            var imageData64 = canvas.toDataURL('image/png');
-            console.log('[Handwriting] Sending canvas image for recognition, field:', fieldId);
+        // If Tesseract didn't work, try server API as fallback
+        if (!recognizedText) {
+            try {
+                var imageData64 = canvas.toDataURL('image/png');
+                console.log('[Handwriting] Trying server API for recognition');
 
-            var response = await fetch(API_BASE + '/recognize-handwriting', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: imageData64 })
-            });
+                var response = await fetch(API_BASE + '/recognize-handwriting', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: imageData64 })
+                });
 
-            var result = await response.json();
-            console.log('[Handwriting] Server response:', result);
+                var result = await response.json();
+                console.log('[Handwriting] Server response:', result);
 
-            if (response.ok && result.text) {
-                recognizedText = result.text.trim();
-            } else if (response.status === 503 || response.status === 429) {
-                // API unavailable or quota exceeded - show friendly message
-                showError('हस्तलेख पहिचान उपलब्ध छैन। कृपया किबोर्ड प्रयोग गर्नुहोस्।');
-                hideLoading();
-                return;
-            } else {
-                var detail = result.detail || 'Recognition failed';
-                showError('हस्तलेख पहिचान गर्न सकेन: ' + detail);
-                hideLoading();
-                return;
+                if (response.ok && result.text) {
+                    recognizedText = result.text.trim();
+                } else if (response.status === 503 || response.status === 429) {
+                    // API unavailable or quota exceeded
+                    showError('हस्तलेख पहिचान उपलब्ध छैन। कृपया किबोर्ड प्रयोग गर्नुहोस्।');
+                    hideLoading();
+                    return;
+                }
+            } catch (serverError) {
+                console.warn('[Handwriting] Server API failed:', serverError);
             }
-        } else if (!recognizedText && !offlineAvailable) {
-            // Offline model not loaded - show message to use keyboard
-            showError('अफलाइन हस्तलेख मोडेल लोड भएको छैन। कृपया किबोर्ड प्रयोग गर्नुहोस्।');
+        }
+        
+        // If still no result, show error
+        if (!recognizedText) {
+            showError('हस्तलेख पहिचान गर्न सकेन। कृपया स्पष्ट लेख्नुहोस् वा किबोर्ड प्रयोग गर्नुहोस्।');
             hideLoading();
             return;
         }
 
         if (recognizedText) {
-            // Apply grammar correction
-            var correctedText = await correctNepaliGrammar(recognizedText, fieldId);
+            // Skip grammar correction for English fields
+            var correctedText = recognizedText;
+            if (!isEnglishField(fieldId)) {
+                correctedText = await correctNepaliGrammar(recognizedText, fieldId);
+            }
 
             var state = fieldStates[fieldId];
             if (state) {
@@ -1328,8 +1355,41 @@ function showDocumentPreview(content) {
         previewDiv.innerHTML = html;
     } else {
         var sanitized = String(content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        previewDiv.innerHTML = '<div class="bg-gray-50 p-6 rounded-lg"><h3 class="text-lg font-semibold mb-4">दस्तावेज पूर्वावलोकन</h3><div class="bg-white p-4 rounded border" style="line-height:1.8"><pre class="whitespace-pre-wrap text-sm">' + sanitized + '</pre></div></div>';
+        previewDiv.innerHTML = '<div class="bg-gray-50 p-6 rounded-lg"><h3 class="text-lg font-semibold mb-4">दस्तावेज पूर्वावलोकन</h3><div id="printablePreview" class="bg-white p-4 rounded border" style="line-height:1.8"><pre class="whitespace-pre-wrap text-sm" style="font-family: \'Noto Sans Devanagari\', \'Mangal\', \'Preeti\', sans-serif;">' + sanitized + '</pre></div></div>';
     }
+}
+
+/** Print the preview directly using browser's Print to PDF - preserves Nepali formatting */
+function printPreviewAsPDF() {
+    var previewContent = document.getElementById('printablePreview');
+    if (!previewContent) {
+        previewContent = document.getElementById('documentPreview');
+    }
+    if (!previewContent) {
+        showError('कृपया पहिले PDF उत्पन्न गर्नुहोस्।');
+        return;
+    }
+    
+    // Create print window with proper styling
+    var printWindow = window.open('', '_blank');
+    printWindow.document.write('<!DOCTYPE html><html><head>');
+    printWindow.document.write('<meta charset="UTF-8">');
+    printWindow.document.write('<title>दस्तावेज प्रिन्ट</title>');
+    printWindow.document.write('<style>');
+    printWindow.document.write('@import url("https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;500;600;700&display=swap");');
+    printWindow.document.write('* { font-family: "Noto Sans Devanagari", "Mangal", "Arial Unicode MS", sans-serif; }');
+    printWindow.document.write('body { padding: 40px; font-size: 12pt; line-height: 1.8; }');
+    printWindow.document.write('pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; }');
+    printWindow.document.write('@media print { body { padding: 20px; } }');
+    printWindow.document.write('</style></head><body>');
+    printWindow.document.write(previewContent.innerHTML);
+    printWindow.document.write('</body></html>');
+    printWindow.document.close();
+    
+    // Wait for fonts to load then print
+    setTimeout(function() {
+        printWindow.print();
+    }, 500);
 }
 
 // =====================================================
@@ -1399,6 +1459,7 @@ window.clearCanvas = clearCanvas;
 window.recognizeHandwriting = recognizeHandwriting;
 window.generatePDF = generatePDF;
 window.downloadPDF = downloadPDF;
+window.printPreviewAsPDF = printPreviewAsPDF;
 window.startNew = startNew;
 window.rateService = rateService;
 window.submitFeedback = submitFeedback;

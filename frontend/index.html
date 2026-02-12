@@ -371,10 +371,14 @@
                         <button onclick="downloadPDF()" class="bg-blue-600 text-white px-8 py-3 rounded-lg hover:bg-blue-700 transition hidden" id="downloadBtn">
                             <i class="fas fa-download mr-2"></i>PDF डाउनलोड गर्नुहोस्
                         </button>
+                        <button onclick="printPreviewAsPDF()" class="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition" title="ब्राउजरबाट प्रिन्ट गर्नुहोस् - राम्रो फर्म्याटिङ">
+                            <i class="fas fa-print mr-2"></i>प्रिन्ट PDF
+                        </button>
                         <button onclick="startNew()" class="bg-gray-600 text-white px-8 py-3 rounded-lg hover:bg-gray-700 transition">
                             <i class="fas fa-home mr-2"></i>नयाँ दस्तावेज
                         </button>
                     </div>
+                    <p class="text-center text-sm text-gray-500 mt-2">💡 यदि PDF मा अक्षर बिग्रियो भने "प्रिन्ट PDF" प्रयोग गर्नुहोस्</p>
                 </div>
 
                 <!-- Feedback Section -->
@@ -431,14 +435,9 @@
         <div id="toastContainer" class="toast-container"></div>
     </div>
 
-    <!-- TensorFlow.js for offline handwriting recognition -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
-    
-    <!-- Offline Handwriting Recognition Modules -->
-    <script src="/static/handwriting/stroke_processor.js"></script>
-    <script src="/static/handwriting/ctc_decoder.js"></script>
-    <script src="/static/handwriting/handwriting.js"></script>
-    <script src="offline_handwriting.js"></script>
+    <!-- Tesseract.js for OCR-based handwriting recognition -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="tesseract_handwriting.js"></script>
     
     <script src="script.js"></script>
     <script>
