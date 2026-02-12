@@ -896,6 +896,10 @@ function clearModalCanvas() {
         var ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
+    // Also clear stroke capture for offline recognition
+    if (typeof OfflineHandwriting !== 'undefined') {
+        OfflineHandwriting.clearCanvasStrokes('modalCanvas');
+    }
 }
 
 async function submitFieldCanvas() {
@@ -924,48 +928,72 @@ async function submitFieldCanvas() {
     var fieldId = activeCanvasFieldId;
 
     try {
-        var imageData64 = canvas.toDataURL('image/png');
-        console.log('[Handwriting] Sending canvas image for recognition, field:', fieldId);
-
-        var response = await fetch(API_BASE + '/recognize-handwriting', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image: imageData64 })
-        });
-
-        var result = await response.json();
-        console.log('[Handwriting] Server response:', result);
-
-        if (response.ok && result.text) {
-            var recognizedText = result.text.trim();
-            if (recognizedText) {
-                // Apply grammar correction
-                var correctedText = await correctNepaliGrammar(recognizedText, fieldId);
-
-                var state = fieldStates[fieldId];
-                if (state) {
-                    state.setValue(correctedText, 'handwriting');
-                    console.log('[Handwriting] Field', fieldId, 'set to:', correctedText);
-                } else {
-                    // Fallback: directly set the DOM element
-                    var inputEl = document.getElementById(fieldId);
-                    if (inputEl) {
-                        inputEl.value = correctedText;
-                        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-                        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                        console.log('[Handwriting] Direct DOM set for', fieldId, ':', correctedText);
-                    }
+        var recognizedText = '';
+        
+        // Try offline recognition first (if available)
+        if (typeof OfflineHandwriting !== 'undefined' && OfflineHandwriting.isOfflineAvailable()) {
+            try {
+                console.log('[Handwriting] Using offline recognition');
+                var offlineResult = await OfflineHandwriting.recognizeOffline('modalCanvas');
+                if (offlineResult && offlineResult.text) {
+                    recognizedText = offlineResult.text.trim();
+                    console.log('[Handwriting] Offline result:', recognizedText, 'confidence:', offlineResult.confidence);
                 }
-                showSuccess('हस्तलेख पहिचान सफल!');
-                closeFieldCanvas();
-            } else {
-                showError('पाठ पहिचान गर्न सकेन। कृपया स्पष्ट रूपमा लेख्नुहोस्।');
+            } catch (offlineError) {
+                console.warn('[Handwriting] Offline failed, falling back to server:', offlineError);
             }
-        } else if (response.status === 503) {
-            showError('AI मोडेल उपलब्ध छैन। GEMINI_API_KEY सेट गर्नुहोस्।');
+        }
+        
+        // Fall back to server API if offline unavailable or failed
+        if (!recognizedText) {
+            var imageData64 = canvas.toDataURL('image/png');
+            console.log('[Handwriting] Sending canvas image for recognition, field:', fieldId);
+
+            var response = await fetch(API_BASE + '/recognize-handwriting', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: imageData64 })
+            });
+
+            var result = await response.json();
+            console.log('[Handwriting] Server response:', result);
+
+            if (response.ok && result.text) {
+                recognizedText = result.text.trim();
+            } else if (response.status === 503) {
+                showError('AI मोडेल उपलब्ध छैन। GEMINI_API_KEY सेट गर्नुहोस्।');
+                hideLoading();
+                return;
+            } else {
+                var detail = result.detail || 'Recognition failed';
+                showError('हस्तलेख पहिचान गर्न सकेन: ' + detail);
+                hideLoading();
+                return;
+            }
+        }
+
+        if (recognizedText) {
+            // Apply grammar correction
+            var correctedText = await correctNepaliGrammar(recognizedText, fieldId);
+
+            var state = fieldStates[fieldId];
+            if (state) {
+                state.setValue(correctedText, 'handwriting');
+                console.log('[Handwriting] Field', fieldId, 'set to:', correctedText);
+            } else {
+                // Fallback: directly set the DOM element
+                var inputEl = document.getElementById(fieldId);
+                if (inputEl) {
+                    inputEl.value = correctedText;
+                    inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    console.log('[Handwriting] Direct DOM set for', fieldId, ':', correctedText);
+                }
+            }
+            showSuccess('हस्तलेख पहिचान सफल!');
+            closeFieldCanvas();
         } else {
-            var detail = result.detail || 'Recognition failed';
-            showError('हस्तलेख पहिचान गर्न सकेन: ' + detail);
+            showError('पाठ पहिचान गर्न सकेन। कृपया स्पष्ट रूपमा लेख्नुहोस्।');
         }
     } catch (error) {
         console.error('[Handwriting] Error:', error);
@@ -1003,6 +1031,12 @@ function setupModalCanvas() {
     var canvas = document.getElementById('modalCanvas');
     if (!canvas) return;
     var ctx = canvas.getContext('2d');
+
+    // Setup stroke capture for offline recognition
+    if (typeof OfflineHandwriting !== 'undefined') {
+        OfflineHandwriting.setupCanvasCapture('modalCanvas');
+        console.log('[Handwriting] Stroke capture initialized for offline recognition');
+    }
 
     canvas.addEventListener('mousedown', function (e) {
         isModalDrawing = true;
