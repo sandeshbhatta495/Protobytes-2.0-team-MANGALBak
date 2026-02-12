@@ -19,7 +19,7 @@
         modelPath: '/static/handwriting_model',  // Path to TF.js model
         useBeamSearch: true,
         beamWidth: 10,
-        enableFallback: true,  // Fall back to server if model unavailable
+        enableFallback: false,  // Disable server fallback (API quota issues)
         showTiming: false       // Show timing info in console
     };
 
@@ -28,6 +28,7 @@
     let strokeCaptures = {};  // Canvas ID -> StrokeCapture
     let isModelLoaded = false;
     let modelLoadPromise = null;
+    let modelLoadError = null;  // Store error for user feedback
 
     /**
      * Initialize the offline handwriting system
@@ -64,7 +65,8 @@
             
         } catch (error) {
             console.error('[OfflineHandwriting] Failed to load model:', error);
-            console.log('[OfflineHandwriting] Will use fallback server API');
+            modelLoadError = error.message || 'Model not available';
+            console.log('[OfflineHandwriting] Offline recognition unavailable. Please train and deploy the model.');
             isModelLoaded = false;
         }
     }
@@ -259,8 +261,13 @@
                     closeFieldCanvas();
                 }
             } else {
+                // Provide specific error message
                 if (typeof showError === 'function') {
-                    showError('पाठ पहिचान गर्न सकेन। कृपया स्पष्ट रूपमा लेख्नुहोस्।');
+                    if (!isModelLoaded) {
+                        showError('अफलाइन मोडेल उपलब्ध छैन। कृपया किबोर्ड प्रयोग गर्नुहोस्।');
+                    } else {
+                        showError('पाठ पहिचान गर्न सकेन। कृपया स्पष्ट रूपमा लेख्नुहोस्।');
+                    }
                 }
             }
             

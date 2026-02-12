@@ -929,9 +929,10 @@ async function submitFieldCanvas() {
 
     try {
         var recognizedText = '';
+        var offlineAvailable = typeof OfflineHandwriting !== 'undefined' && OfflineHandwriting.isOfflineAvailable();
         
         // Try offline recognition first (if available)
-        if (typeof OfflineHandwriting !== 'undefined' && OfflineHandwriting.isOfflineAvailable()) {
+        if (offlineAvailable) {
             try {
                 console.log('[Handwriting] Using offline recognition');
                 var offlineResult = await OfflineHandwriting.recognizeOffline('modalCanvas');
@@ -940,12 +941,14 @@ async function submitFieldCanvas() {
                     console.log('[Handwriting] Offline result:', recognizedText, 'confidence:', offlineResult.confidence);
                 }
             } catch (offlineError) {
-                console.warn('[Handwriting] Offline failed, falling back to server:', offlineError);
+                console.warn('[Handwriting] Offline failed:', offlineError);
             }
         }
         
-        // Fall back to server API if offline unavailable or failed
-        if (!recognizedText) {
+        // Fall back to server API only if offline DID work but returned empty
+        // Skip server fallback if offline model isn't loaded (to avoid API quota errors)
+        if (!recognizedText && offlineAvailable) {
+            // Offline was available but didn't recognize - try server
             var imageData64 = canvas.toDataURL('image/png');
             console.log('[Handwriting] Sending canvas image for recognition, field:', fieldId);
 
@@ -960,8 +963,9 @@ async function submitFieldCanvas() {
 
             if (response.ok && result.text) {
                 recognizedText = result.text.trim();
-            } else if (response.status === 503) {
-                showError('AI मोडेल उपलब्ध छैन। GEMINI_API_KEY सेट गर्नुहोस्।');
+            } else if (response.status === 503 || response.status === 429) {
+                // API unavailable or quota exceeded - show friendly message
+                showError('हस्तलेख पहिचान उपलब्ध छैन। कृपया किबोर्ड प्रयोग गर्नुहोस्।');
                 hideLoading();
                 return;
             } else {
@@ -970,6 +974,11 @@ async function submitFieldCanvas() {
                 hideLoading();
                 return;
             }
+        } else if (!recognizedText && !offlineAvailable) {
+            // Offline model not loaded - show message to use keyboard
+            showError('अफलाइन हस्तलेख मोडेल लोड भएको छैन। कृपया किबोर्ड प्रयोग गर्नुहोस्।');
+            hideLoading();
+            return;
         }
 
         if (recognizedText) {
