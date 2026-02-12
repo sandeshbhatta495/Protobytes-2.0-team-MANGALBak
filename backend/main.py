@@ -800,18 +800,59 @@ def _ensure_nepali_font():
     try:
         nepali_font_path = os.path.join(BASE_DIR, 'static', 'fonts', 'NotoSansDevanagari-Regular.ttf')
         if os.path.exists(nepali_font_path):
+            # Register font with full Unicode support
             pdfmetrics.registerFont(TTFont('NotoSansDevanagari', nepali_font_path))
             _nepali_font_name = 'NotoSansDevanagari'
             logger.info(f"Nepali font registered from {nepali_font_path}")
         else:
             logger.warning(f"Nepali font not found at {nepali_font_path}")
+            # Try to use system font as fallback
+            import platform
+            if platform.system() == 'Windows':
+                system_font = r'C:\Windows\Fonts\NirmalaB.ttf'  # Nirmala UI supports Devanagari
+                if os.path.exists(system_font):
+                    pdfmetrics.registerFont(TTFont('NirmalaUI', system_font))
+                    _nepali_font_name = 'NirmalaUI'
+                    logger.info("Using system Nirmala UI font")
     except Exception as e:
         logger.warning(f"Could not register Nepali font: {e}")
     _nepali_font_registered = True
     return _nepali_font_name
 
+def normalize_nepali_text(text: str) -> str:
+    """Normalize Unicode text for proper PDF rendering"""
+    import unicodedata
+    if not text:
+        return text
+    # Normalize to NFC form (composed characters)
+    normalized = unicodedata.normalize('NFC', text)
+    return normalized
+
+def wrap_nepali_text(text: str, max_width: int = 45) -> list:
+    """Word-aware wrapping for Nepali text - never breaks words mid-character"""
+    if not text or len(text) <= max_width:
+        return [text] if text else []
+    
+    words = text.split(' ')
+    lines = []
+    current_line = ""
+    
+    for word in words:
+        if not current_line:
+            current_line = word
+        elif len(current_line) + 1 + len(word) <= max_width:
+            current_line += ' ' + word
+        else:
+            lines.append(current_line)
+            current_line = word
+    
+    if current_line:
+        lines.append(current_line)
+    
+    return lines
+
 async def generate_pdf(content: str, document_type: str, user_data: Dict) -> str:
-    """Generate PDF document with proper Nepali layout"""
+    """Generate PDF document with proper Nepali layout and Unicode embedding"""
     output_dir = os.path.join(BASE_DIR, "generated_documents")
     os.makedirs(output_dir, exist_ok=True)
     
@@ -823,19 +864,22 @@ async def generate_pdf(content: str, document_type: str, user_data: Dict) -> str
     width, height = A4
     font_name = _ensure_nepali_font()
     
+    # Normalize all text content for proper Unicode rendering
+    content = normalize_nepali_text(content)
+    
     # --- PAGE HEADER ---
     # Nepal Government Header
     c.setFont(font_name, 14)
-    c.drawCentredString(width / 2, height - 0.7 * inch, "नेपाल सरकार")
+    c.drawCentredString(width / 2, height - 0.7 * inch, normalize_nepali_text("नेपाल सरकार"))
     
     # Municipality from user data or default
-    municipality = user_data.get('municipality', '')
-    district = user_data.get('district', '')
-    province = user_data.get('province', '')
-    ward = user_data.get('ward', '')
+    municipality = normalize_nepali_text(str(user_data.get('municipality', '')))
+    district = normalize_nepali_text(str(user_data.get('district', '')))
+    province = normalize_nepali_text(str(user_data.get('province', '')))
+    ward = str(user_data.get('ward', ''))
     
     c.setFont(font_name, 16)
-    header_text = municipality if municipality else "स्थानीय तह"
+    header_text = municipality if municipality else normalize_nepali_text("स्थानीय तह")
     c.drawCentredString(width / 2, height - 1.0 * inch, header_text)
     
     c.setFont(font_name, 11)
@@ -844,7 +888,7 @@ async def generate_pdf(content: str, document_type: str, user_data: Dict) -> str
     
     if ward:
         c.setFont(font_name, 11)
-        c.drawCentredString(width / 2, height - 1.45 * inch, f"वडा नं. {ward} को कार्यालय")
+        c.drawCentredString(width / 2, height - 1.45 * inch, normalize_nepali_text(f"वडा नं. {ward} को कार्यालय"))
     
     # Horizontal line
     c.setStrokeColorRGB(0, 0, 0)
@@ -853,13 +897,13 @@ async def generate_pdf(content: str, document_type: str, user_data: Dict) -> str
     
     # Subject
     c.setFont(font_name, 12)
-    subject = f"विषय: {get_document_subject(document_type)}"
+    subject = normalize_nepali_text(f"विषय: {get_document_subject(document_type)}")
     c.drawString(inch, height - 1.9 * inch, subject)
     
     # Date on the right
     date_bs = convert_to_bikram_sambat(datetime.now().strftime('%Y-%m-%d'))
     c.setFont(font_name, 10)
-    c.drawRightString(width - inch, height - 1.9 * inch, f"मिति: {date_bs}")
+    c.drawRightString(width - inch, height - 1.9 * inch, normalize_nepali_text(f"मिति: {date_bs}"))
     
     # --- BODY CONTENT ---
     c.setFont(font_name, 11)
@@ -868,8 +912,10 @@ async def generate_pdf(content: str, document_type: str, user_data: Dict) -> str
     lines = content.split('\n')
     for line in lines:
         if line.strip():
-            # Nepali text wrapping: use ~55 chars per line for proper fit
-            wrapped_lines = textwrap.wrap(line, width=55) if len(line) > 55 else [line]
+            # Normalize each line for proper Unicode rendering
+            normalized_line = normalize_nepali_text(line)
+            # Use Nepali-aware word wrapping that doesn't break words
+            wrapped_lines = wrap_nepali_text(normalized_line, max_width=50)
             for wrapped_line in wrapped_lines:
                 if y_position < 2.5 * inch:
                     # New page
@@ -893,15 +939,15 @@ async def generate_pdf(content: str, document_type: str, user_data: Dict) -> str
     
     # Left: applicant
     c.drawString(inch, sig_y + 0.3 * inch, "..............................")
-    c.drawString(inch, sig_y, "निवेदकको हस्ताक्षर")
+    c.drawString(inch, sig_y, normalize_nepali_text("निवेदकको हस्ताक्षर"))
     
     # Right: authority  
     c.drawString(width - 3 * inch, sig_y + 0.3 * inch, "..............................")
-    c.drawString(width - 3 * inch, sig_y, "प्रमाणिकरण अधिकारी")
+    c.drawString(width - 3 * inch, sig_y, normalize_nepali_text("प्रमाणिकरण अधिकारी"))
     
     # Bottom line
     c.setFont(font_name, 8)
-    c.drawCentredString(width / 2, 0.5 * inch, "यो दस्तावेज सरकारी-सारथी AI Digital Scribe मार्फत उत्पन्न गरिएको हो।")
+    c.drawCentredString(width / 2, 0.5 * inch, normalize_nepali_text("यो दस्तावेज सरकारी-सारथी AI Digital Scribe मार्फत उत्पन्न गरिएको हो।"))
     
     c.save()
     logger.info(f"PDF generated: {filepath}")
