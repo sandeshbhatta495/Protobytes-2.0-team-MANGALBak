@@ -90,17 +90,51 @@ function getOrCreateFieldState(fieldId, element, label) {
 //  CLIENT-SIDE TRANSLITERATION (English → Nepali)
 // =====================================================
 const TRANSLIT_MULTI = {
-    'shri': 'श्री', 'shr': 'श्र', 'ksh': 'क्ष', 'tra': 'त्र', 'gya': 'ज्ञ',
-    'chh': 'छ', 'thh': 'ठ', 'dhh': 'ढ', 'shh': 'ष',
-    'kha': 'खा', 'gha': 'घा', 'cha': 'चा', 'chha': 'छा',
-    'jha': 'झा', 'tha': 'था', 'dha': 'धा', 'pha': 'फा',
-    'bha': 'भा', 'sha': 'शा',
-    'kh': 'ख', 'gh': 'घ', 'ng': 'ङ',
-    'ch': 'च', 'jh': 'झ', 'ny': 'ञ',
-    'th': 'थ', 'dh': 'ध', 'ph': 'फ',
-    'bh': 'भ', 'sh': 'श',
-    'aa': 'ा', 'ee': 'ी', 'oo': 'ू', 'ai': 'ै', 'au': 'ौ',
-    'ou': 'ौ', 'ei': 'ै'
+    // Conjuncts and special combinations
+    'shri': 'श्री', 'shree': 'श्री',
+    'kshya': 'क्ष्य', 'ksha': 'क्षा', 'ksh': 'क्ष',
+    'gya': 'ज्ञ', 'dnya': 'ज्ञ', 'gnya': 'ज्ञ',
+    'tra': 'त्र', 'tri': 'त्रि', 'tru': 'त्रु',
+    'dra': 'द्र', 'dri': 'द्रि',
+    'pra': 'प्र', 'pri': 'प्रि',
+    'bra': 'ब्र', 'bri': 'ब्रि',
+    'shr': 'श्र', 'shra': 'श्रा',
+    'ntr': 'न्त्र', 'ndr': 'न्द्र',
+    'str': 'स्त्र', 'sta': 'स्ता',
+    'sth': 'स्थ', 'stha': 'स्था',
+    'sna': 'स्ना', 'swa': 'स्वा', 'sw': 'स्व',
+    'tth': 'त्थ', 'ddh': 'द्ध',
+    'nch': 'न्च', 'nj': 'न्ज', 'nd': 'न्द', 'nt': 'न्त',
+    'mp': 'म्प', 'mb': 'म्ब',
+    'ng': 'ङ', 'nk': 'ङ्क',
+    'rya': 'र्य', 'ryu': 'र्यु',
+    // Aspirated consonants with vowels
+    'chha': 'छा', 'chhi': 'छि', 'chhu': 'छु', 'chhe': 'छे', 'chho': 'छो',
+    'chh': 'छ',
+    'kha': 'खा', 'khi': 'खि', 'khu': 'खु', 'khe': 'खे', 'kho': 'खो',
+    'kh': 'ख',
+    'gha': 'घा', 'ghi': 'घि', 'ghu': 'घु', 'ghe': 'घे', 'gho': 'घो',
+    'gh': 'घ',
+    'cha': 'चा', 'chi': 'चि', 'chu': 'चु', 'che': 'चे', 'cho': 'चो',
+    'ch': 'च',
+    'jha': 'झा', 'jhi': 'झि', 'jhu': 'झु', 'jhe': 'झे', 'jho': 'झो',
+    'jh': 'झ',
+    'tha': 'था', 'thi': 'थि', 'thu': 'थु', 'the': 'थे', 'tho': 'थो',
+    'th': 'थ',
+    'dha': 'धा', 'dhi': 'धि', 'dhu': 'धु', 'dhe': 'धे', 'dho': 'धो',
+    'dh': 'ध',
+    'pha': 'फा', 'phi': 'फि', 'phu': 'फु', 'phe': 'फे', 'pho': 'फो',
+    'ph': 'फ',
+    'bha': 'भा', 'bhi': 'भि', 'bhu': 'भु', 'bhe': 'भे', 'bho': 'भो',
+    'bh': 'भ',
+    'sha': 'शा', 'shi': 'शि', 'shu': 'शु', 'she': 'शे', 'sho': 'शो',
+    'sh': 'श',
+    'ny': 'ञ',
+    // Vowel combinations
+    'aa': 'ा', 'ee': 'ी', 'ii': 'ी', 'oo': 'ू', 'uu': 'ू',
+    'ai': 'ै', 'au': 'ौ', 'ou': 'ौ', 'ei': 'ै',
+    // Retroflex
+    'tt': 'ट', 'tth': 'ठ', 'dd': 'ड', 'ddh': 'ढ', 'nn': 'ण'
 };
 const TRANSLIT_VOWEL_STANDALONE = { 'a': 'अ', 'i': 'इ', 'u': 'उ', 'e': 'ए', 'o': 'ओ' };
 const TRANSLIT_VOWEL_MATRA = { 'a': '', 'i': 'ि', 'u': 'ु', 'e': 'े', 'o': 'ो' };
@@ -112,21 +146,35 @@ const TRANSLIT_CONSONANT = {
 };
 const DEVANAGARI_DIGITS = '०१२३४५६७८९';
 const TRANSLIT_WORDS = {
+    // Personal names and relations
     'name': 'नाम', 'first': 'पहिलो', 'last': 'थर', 'ram': 'राम',
-    'sita': 'सिता', 'hari': 'हरि', 'kumar': 'कुमार', 'shrestha': 'श्रेष्ठ',
+    'sita': 'सीता', 'hari': 'हरि', 'kumar': 'कुमार', 'shrestha': 'श्रेष्ठ',
     'sharma': 'शर्मा', 'thapa': 'थापा', 'tamang': 'तामाङ', 'gurung': 'गुरुङ',
-    'magar': 'मगर', 'rai': 'राई', 'limbu': 'लिम्बु', 'nepal': 'नेपाल',
-    'kathmandu': 'काठमाडौं', 'pokhara': 'पोखरा', 'lalitpur': 'ललितपुर',
-    'bhaktapur': 'भक्तपुर', 'biratnagar': 'बिराटनगर',
-    'male': 'पुरुष', 'female': 'महिला', 'other': 'अन्य',
-    'married': 'विवाहित', 'unmarried': 'अविवाहित', 'single': 'एकल',
-    'hindu': 'हिन्दू', 'buddhist': 'बौद्ध', 'muslim': 'मुस्लिम', 'christian': 'ईसाई',
-    'nepali': 'नेपाली', 'father': 'बुबा', 'mother': 'आमा',
-    'son': 'छोरा', 'daughter': 'छोरी', 'husband': 'पति', 'wife': 'पत्नी',
-    'grandfather': 'हजुरबुबा', 'grandmother': 'हजुरआमा',
+    'magar': 'मगर', 'rai': 'राई', 'limbu': 'लिम्बु', 'newar': 'नेवार',
     'bahadur': 'बहादुर', 'prasad': 'प्रसाद', 'devi': 'देवी', 'maya': 'माया',
     'laxmi': 'लक्ष्मी', 'krishna': 'कृष्ण', 'shiva': 'शिव', 'ganesh': 'गणेश',
-    'bir': 'बिर', 'dal': 'दल', 'jit': 'जित'
+    'bir': 'बिर', 'dal': 'दल', 'jit': 'जित',
+    // Family relations
+    'father': 'बुबा', 'mother': 'आमा', 'son': 'छोरा', 'daughter': 'छोरी',
+    'husband': 'पति', 'wife': 'पत्नी', 
+    'grandfather': 'हजुरबुबा', 'grandmother': 'हजुरआमा',
+    'brother': 'दाजु', 'sister': 'दिदी',
+    // Places
+    'nepal': 'नेपाल', 'kathmandu': 'काठमाडौं', 'pokhara': 'पोखरा', 
+    'lalitpur': 'ललितपुर', 'bhaktapur': 'भक्तपुर', 'biratnagar': 'बिराटनगर',
+    // Gender and status
+    'male': 'पुरुष', 'female': 'महिला', 'other': 'अन्य',
+    'married': 'विवाहित', 'unmarried': 'अविवाहित', 'single': 'एकल',
+    // Religion
+    'hindu': 'हिन्दू', 'buddhist': 'बौद्ध', 'muslim': 'मुस्लिम', 'christian': 'ईसाई',
+    'nepali': 'नेपाली',
+    // Administrative terms
+    'province': 'प्रदेश', 'district': 'जिल्ला', 'ward': 'वडा',
+    'municipality': 'नगरपालिका', 'village': 'गाउँ', 'address': 'ठेगाना',
+    'date': 'मिति', 'year': 'वर्ष', 'month': 'महिना', 'day': 'दिन',
+    // Document types
+    'birth': 'जन्म', 'death': 'मृत्यु', 'marriage': 'विवाह', 'divorce': 'सम्बन्ध विच्छेद',
+    'application': 'निवेदन', 'certificate': 'प्रमाणपत्र', 'registration': 'दर्ता'
 };
 
 /** Transliterate a single English word/phrase to Nepali Devanagari */
@@ -415,7 +463,11 @@ async function loadLocationData() {
                             province_name: p['प्रदेश_नाम'],
                             districts: (p['जिल्लाहरू'] || []).map(function (d) {
                                 var municipalities = (d['स्थानीय_तहहरू'] || []).map(function (m) {
-                                    return { name: m.name || m['नाम'], type: m.type || m['प्रकार'], wards: m.wards || m['वडा'] };
+                                    // Handle both plain string entries and object entries
+                                    if (typeof m === 'string') {
+                                        return { name: m };
+                                    }
+                                    return { name: m.name || m['नाम'] || '', type: m.type || m['प्रकार'], wards: m.wards || m['वडा'] };
                                 });
                                 return { district_name: d['जिल्ला_नाम'], municipalities: municipalities };
                             })
@@ -952,49 +1004,46 @@ async function submitFieldCanvas() {
     try {
         var recognizedText = '';
         
-        // Use Tesseract.js for handwriting recognition
-        if (typeof TesseractHandwriting !== 'undefined' && TesseractHandwriting.isAvailable()) {
+        // Strategy: Try server-side OCR first (more reliable with CLI Tesseract),
+        // then fall back to client-side Tesseract.js
+        
+        // Method 1: Server-side Tesseract (better for handwriting)
+        try {
+            var imageData64 = canvas.toDataURL('image/png');
+            console.log('[Handwriting] Trying server API for recognition');
+
+            var response = await fetch(API_BASE + '/recognize-handwriting', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: imageData64 })
+            });
+
+            var result = await response.json();
+            console.log('[Handwriting] Server response:', result);
+
+            if (response.ok && result.text && result.text.trim().length > 0) {
+                recognizedText = result.text.trim();
+                console.log('[Handwriting] Server OCR result:', recognizedText);
+            }
+        } catch (serverError) {
+            console.warn('[Handwriting] Server API unavailable:', serverError.message);
+        }
+        
+        // Method 2: Client-side Tesseract.js (fallback)
+        if (!recognizedText && typeof TesseractHandwriting !== 'undefined' && TesseractHandwriting.isAvailable()) {
             try {
-                console.log('[Handwriting] Using Tesseract.js OCR');
+                console.log('[Handwriting] Using Tesseract.js OCR (fallback)');
                 showToast('हस्तलेख पहिचान गर्दै... (पहिलो पटक केही समय लाग्छ)', 'info');
                 
                 var ocrResult = await TesseractHandwriting.recognize(canvas);
-                if (ocrResult && ocrResult.success && ocrResult.text) {
+                if (ocrResult && ocrResult.success && ocrResult.text && ocrResult.text.length > 0) {
                     recognizedText = ocrResult.text.trim();
-                    console.log('[Handwriting] Tesseract result:', recognizedText, 'confidence:', ocrResult.confidence);
+                    console.log('[Handwriting] Tesseract.js result:', recognizedText, 'confidence:', ocrResult.confidence);
                 } else if (ocrResult && !ocrResult.success) {
-                    console.warn('[Handwriting] Tesseract failed:', ocrResult.error);
+                    console.warn('[Handwriting] Tesseract.js failed:', ocrResult.error);
                 }
             } catch (ocrError) {
-                console.warn('[Handwriting] Tesseract error:', ocrError);
-            }
-        }
-        
-        // If Tesseract didn't work, try server API as fallback
-        if (!recognizedText) {
-            try {
-                var imageData64 = canvas.toDataURL('image/png');
-                console.log('[Handwriting] Trying server API for recognition');
-
-                var response = await fetch(API_BASE + '/recognize-handwriting', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: imageData64 })
-                });
-
-                var result = await response.json();
-                console.log('[Handwriting] Server response:', result);
-
-                if (response.ok && result.text) {
-                    recognizedText = result.text.trim();
-                } else if (response.status === 503 || response.status === 429) {
-                    // API unavailable or quota exceeded
-                    showError('हस्तलेख पहिचान उपलब्ध छैन। कृपया किबोर्ड प्रयोग गर्नुहोस्।');
-                    hideLoading();
-                    return;
-                }
-            } catch (serverError) {
-                console.warn('[Handwriting] Server API failed:', serverError);
+                console.warn('[Handwriting] Tesseract.js error:', ocrError);
             }
         }
         
