@@ -174,6 +174,13 @@ async def startup_event():
     await initialize_models()
 
 # Endpoints
+@app.get("/favicon.ico")
+def favicon():
+    path = os.path.join(BASE_DIR, "static", "fav-icon.png")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="image/png")
+    raise HTTPException(404, "Favicon not found")
+
 @app.get("/")
 def root(): return {"message": "Sarkari-Sarathi API (Offline Mode)"}
 
