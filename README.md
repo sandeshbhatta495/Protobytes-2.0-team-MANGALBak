@@ -190,6 +190,8 @@ source venv/bin/activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
+#if you want to install the latest version of transformers and imageio-ffmpeg, you can use:
+#pip install --upgrade transformers imageio-ffmpeg
 # 4. Configure Gemini API key
 # Create/edit .env.config:
 #   GEMINI_API_KEY=your_key_here
