@@ -64,6 +64,20 @@ load_dotenv()
 from nepali_asr import get_nepali_asr
 from grammar import correct_nepali_text
 
+# Import CNN handwriting recognizer
+import sys
+_CNN_MODEL_DIR = os.path.join(BASE_DIR, "..", "handwriting_recognition", "cnn_model")
+if os.path.isdir(_CNN_MODEL_DIR):
+    sys.path.insert(0, _CNN_MODEL_DIR)
+    try:
+        from inference import get_recognizer as get_cnn_recognizer, recognize_handwriting_image
+        _CNN_AVAILABLE = True
+    except ImportError as e:
+        print(f"[Warning] CNN handwriting recognizer import failed: {e}")
+        _CNN_AVAILABLE = False
+else:
+    _CNN_AVAILABLE = False
+
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,6 +104,7 @@ if os.path.exists(FRONTEND_DIR):
 whisper_model = None
 templates = {}
 nepali_asr = None
+cnn_recognizer = None  # CNN handwriting recognizer
 
 # Pydantic Models
 class DocumentRequest(BaseModel):
@@ -111,13 +126,24 @@ class GrammarCorrectionRequest(BaseModel):
 
 # Initialization
 async def initialize_models():
-    global whisper_model, nepali_asr
+    global whisper_model, nepali_asr, cnn_recognizer
     await load_templates()
     
-    # Load Whisper
+    # Load CNN handwriting recognizer
+    if _CNN_AVAILABLE:
+        try:
+            cnn_recognizer = get_cnn_recognizer()
+            if cnn_recognizer.loaded:
+                logger.info("CNN handwriting recognizer loaded")
+            else:
+                logger.warning("CNN handwriting model not trained yet — run train.py")
+        except Exception as e:
+            logger.warning(f"CNN recognizer init failed: {e}")
+    
+    # Load Whisper (tiny model for CPU efficiency)
     try:
-        whisper_model = whisper.load_model("base")
-        logger.info("Generic Whisper (base) loaded")
+        whisper_model = whisper.load_model("tiny")
+        logger.info("Generic Whisper (tiny) loaded - CPU optimized")
     except Exception as e:
         logger.warning(f"Whisper load failed: {e}")
     
@@ -157,7 +183,8 @@ def health():
         "status": "ok",
         "nepali_asr": nepali_asr is not None and nepali_asr.pipe is not None,
         "whisper": whisper_model is not None,
-        "tesseract": shutil.which("tesseract") is not None
+        "tesseract": shutil.which("tesseract") is not None,
+        "cnn_handwriting": _CNN_AVAILABLE and cnn_recognizer is not None and cnn_recognizer.loaded,
     }
 
 @app.post("/transcribe-audio")
@@ -422,78 +449,201 @@ async def correct_grammar_endpoint(req: GrammarCorrectionRequest):
 
 @app.post("/recognize-handwriting")
 async def recognize_handwriting(req: HandwritingRequest):
-    if not shutil.which("tesseract"): raise HTTPException(503, "Tesseract not found")
+    """
+    Recognize handwritten Nepali text from a canvas image.
+    
+    Strategy:
+      1. Try CNN word classifier first (fast, accurate for known vocabulary)
+      2. Fall back to Tesseract OCR if CNN fails or has low confidence
+    """
     try:
         img_bytes = base64.b64decode(req.image.split(',')[1] if ',' in req.image else req.image)
         img = Image.open(io.BytesIO(img_bytes))
-        
-        # Enhanced preprocessing for better OCR
-        # 1. Convert to grayscale
-        img = img.convert('L')
-        
-        # 2. Resize for better recognition (Tesseract prefers larger images)
-        scale_factor = 2
-        new_size = (img.width * scale_factor, img.height * scale_factor)
-        img = img.resize(new_size, Image.LANCZOS)
-        
-        # 3. Add padding (white border)
-        padding = 40
-        padded = Image.new('L', (img.width + padding*2, img.height + padding*2), 255)
-        padded.paste(img, (padding, padding))
-        img = padded
-        
-        # 4. Binarization with adaptive threshold
+    except Exception as e:
+        logger.error(f"Image decode error: {e}")
+        raise HTTPException(400, "Invalid image data")
+    
+    # ────────────────────────────────────────────────────────────────
+    #  METHOD 1: CNN Word Classifier  (preferred)
+    # ────────────────────────────────────────────────────────────────
+    if _CNN_AVAILABLE and cnn_recognizer and cnn_recognizer.loaded:
+        try:
+            result = recognize_handwriting_image(img, top_k=5)
+            if result.get("success") and result.get("confidence", 0) > 0.4:
+                logger.info(f"CNN recognition: '{result['text']}' (conf={result['confidence']:.2f})")
+                return {
+                    "text": correct_nepali_text(result["text"]),
+                    "confidence": result["confidence"],
+                    "alternatives": result.get("alternatives", []),
+                    "method": "cnn",
+                    "success": True
+                }
+            else:
+                logger.info(f"CNN low confidence ({result.get('confidence', 0):.2f}), trying Tesseract...")
+        except Exception as e:
+            logger.warning(f"CNN recognition error: {e}")
+    
+    # ────────────────────────────────────────────────────────────────
+    #  METHOD 2: Tesseract OCR  (fallback)
+    # ────────────────────────────────────────────────────────────────
+    if not shutil.which("tesseract"):
+        # No Tesseract and CNN failed — return error
+        if _CNN_AVAILABLE:
+            return {"text": "", "success": False, "error": "Recognition failed"}
+        raise HTTPException(503, "No recognition engine available (install Tesseract or train CNN model)")
+    
+    try:
         import numpy as np
+
+        # ------------------------------------------------------------------
+        # FIX: Canvas has TRANSPARENT background + black strokes.
+        # img.convert('L') turns transparent pixels to BLACK, making the
+        # entire image black → Tesseract cannot see any text.
+        # Solution: composite onto a WHITE background first.
+        # ------------------------------------------------------------------
+
+        # 1. Composite transparent image onto white background
+        if img.mode in ('RGBA', 'LA', 'PA'):
+            white_bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
+            white_bg.paste(img, mask=img.split()[-1])  # use alpha as mask
+            img = white_bg.convert('L')
+        else:
+            img = img.convert('L')
+
+        # 2. Crop to content bounding box (remove excess whitespace)
         img_array = np.array(img)
-        
-        # Simple adaptive threshold: compare each pixel to local mean
-        # Use lower threshold to keep more stroke details
-        threshold = 200
+        # Find rows/cols with any dark pixel (< 240)
+        dark_mask = img_array < 240
+        rows_with_content = np.any(dark_mask, axis=1)
+        cols_with_content = np.any(dark_mask, axis=0)
+        if not np.any(rows_with_content):
+            return {"text": "", "success": False}
+        row_min, row_max = np.where(rows_with_content)[0][[0, -1]]
+        col_min, col_max = np.where(cols_with_content)[0][[0, -1]]
+        # Add small margin around content
+        margin = 10
+        row_min = max(0, row_min - margin)
+        row_max = min(img_array.shape[0] - 1, row_max + margin)
+        col_min = max(0, col_min - margin)
+        col_max = min(img_array.shape[1] - 1, col_max + margin)
+        img_array = img_array[row_min:row_max + 1, col_min:col_max + 1]
+
+        # 3. Upscale to at least 300 DPI equivalent (Tesseract optimal)
+        h, w = img_array.shape
+        scale = max(1, 300 * 6 // max(w, 1))  # target ~1800px wide
+        scale = min(scale, 4)                   # cap at 4x
+        if scale > 1:
+            img_up = Image.fromarray(img_array)
+            img_up = img_up.resize((w * scale, h * scale), Image.LANCZOS)
+            img_array = np.array(img_up)
+
+        # 4. Binarization — Otsu-style automatic threshold
+        # Use histogram to find optimal split between ink and background
+        hist, _ = np.histogram(img_array.ravel(), bins=256, range=(0, 256))
+        total = img_array.size
+        sum_total = np.sum(np.arange(256) * hist)
+        sum_bg = 0.0
+        w_bg = 0
+        max_var = 0.0
+        threshold = 128
+        for t in range(256):
+            w_bg += hist[t]
+            if w_bg == 0: continue
+            w_fg = total - w_bg
+            if w_fg == 0: break
+            sum_bg += t * hist[t]
+            mean_bg = sum_bg / w_bg
+            mean_fg = (sum_total - sum_bg) / w_fg
+            var_between = w_bg * w_fg * (mean_bg - mean_fg) ** 2
+            if var_between > max_var:
+                max_var = var_between
+                threshold = t
+        # Clamp threshold so we don't lose thin strokes
+        threshold = min(threshold + 20, 220)
         binary = np.where(img_array < threshold, 0, 255).astype(np.uint8)
-        
-        # 5. Dilation to thicken strokes (morphological operation)
-        # Simple dilation: if any neighbor is black, make this black
-        dilated = binary.copy()
-        for i in range(2):  # Two passes of dilation
-            temp = dilated.copy()
-            for y in range(1, dilated.shape[0] - 1):
-                for x in range(1, dilated.shape[1] - 1):
-                    if temp[y-1:y+2, x-1:x+2].min() == 0:
-                        dilated[y, x] = 0
-        
-        # Convert back to PIL Image
-        img = Image.fromarray(dilated)
-        
+
+        # 5. Fast morphological dilation (numpy-based, no slow loops)
+        # Thicken strokes so Tesseract can read thin handwriting
+        ink = (binary == 0)  # True where stroke
+        dilated = ink.copy()
+        for _ in range(2):
+            dilated = (
+                dilated
+                | np.roll(dilated, 1, axis=0)
+                | np.roll(dilated, -1, axis=0)
+                | np.roll(dilated, 1, axis=1)
+                | np.roll(dilated, -1, axis=1)
+            )
+        binary = np.where(dilated, 0, 255).astype(np.uint8)
+
+        # 6. Add generous white padding
+        pad = 60
+        padded = np.full(
+            (binary.shape[0] + pad * 2, binary.shape[1] + pad * 2),
+            255, dtype=np.uint8
+        )
+        padded[pad:pad + binary.shape[0], pad:pad + binary.shape[1]] = binary
+
+        img = Image.fromarray(padded)
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
             img.save(tmp, format="PNG")
             tmp_path = tmp.name
-        
+
         try:
-            # PSM 7 = single line, PSM 6 = single block
-            # Try PSM 6 first for multi-line support
-            res = subprocess.run([
-                'tesseract', tmp_path, 'stdout', 
-                '-l', 'nep+eng', 
-                '--psm', '6',
-                '--oem', '1'  # LSTM engine only
-            ], capture_output=True, text=True, check=True)
-            text = res.stdout.strip()
-            
-            # If no result, try single line mode
-            if not text:
-                res = subprocess.run([
-                    'tesseract', tmp_path, 'stdout', 
-                    '-l', 'nep+eng', 
-                    '--psm', '7'
-                ], capture_output=True, text=True, check=True)
-                text = res.stdout.strip()
-            
-            return {"text": correct_nepali_text(text), "success": True}
+            best_text = ''
+            best_conf = -1
+
+            # Try multiple Page Segmentation Modes for best result
+            for psm in ['6', '7', '13']:
+                try:
+                    res = subprocess.run([
+                        'tesseract', tmp_path, 'stdout',
+                        '-l', 'nep+eng',
+                        '--psm', psm,
+                        '--oem', '1',
+                        '-c', 'preserve_interword_spaces=1',
+                    ], capture_output=True, text=True, timeout=30)
+                    txt = res.stdout.strip()
+                    if not txt:
+                        continue
+                    # Clean garbage characters
+                    txt = _clean_ocr(txt)
+                    if not txt:
+                        continue
+                    # Simple confidence heuristic: longer meaningful text is better
+                    score = len(txt)
+                    if score > best_conf:
+                        best_conf = score
+                        best_text = txt
+                except Exception:
+                    continue
+
+            logger.info(f"Tesseract OCR result: '{best_text}' (score={best_conf})")
+            if best_text:
+                return {"text": correct_nepali_text(best_text), "method": "tesseract", "success": True}
+            return {"text": "", "method": "tesseract", "success": False}
         finally:
             if os.path.exists(tmp_path): os.unlink(tmp_path)
     except Exception as e:
         logger.error(f"Handwriting error: {e}")
         raise HTTPException(500, str(e))
+
+
+def _clean_ocr(text: str) -> str:
+    """Remove OCR noise/garbage from recognized text."""
+    import re as _re
+    if not text:
+        return ''
+    # Remove control characters
+    text = _re.sub(r'[\x00-\x1f\x7f]', '', text).strip()
+    # Keep only lines with at least one Devanagari or Latin alphanumeric char
+    lines = text.split('\n')
+    good = [l.strip() for l in lines
+            if _re.search(r'[\u0900-\u097fa-zA-Z0-9]', l)]
+    text = ' '.join(good).strip()
+    text = _re.sub(r'\s+', ' ', text)
+    return text
 
 @app.post("/generate-document")
 async def generate_document(req: DocumentRequest):

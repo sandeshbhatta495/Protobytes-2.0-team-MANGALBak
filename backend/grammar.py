@@ -19,9 +19,11 @@ def correct_nepali_text(text):
     text = unicodedata.normalize('NFC', text.strip())
     
     # 2. Punctuation Normalization
-    # Convert ASCII punctuation to Nepali equivalents
+    # Convert pipe to danda
     text = text.replace('|', '।')
-    text = text.replace('.', '।')  # Period to danda in Nepali context
+    # Only convert period to danda when surrounded by Devanagari text
+    # (preserve periods in numbers like 12.5 and English text)
+    text = re.sub(r'(?<=[\u0900-\u097f])\.(?=[\s\u0900-\u097f]|$)', '।', text)
     text = text.replace(',', ',')  # Keep comma (sometimes used)
     
     # 3. Common Spelling/Suffix Fixes (Rule-based)
