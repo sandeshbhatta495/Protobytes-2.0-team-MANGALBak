@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.11+-green.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-teal.svg)
 ![Whisper](https://img.shields.io/badge/Whisper-Nepali%20Fine--tuned-orange.svg)
-![Tesseract](https://img.shields.io/badge/Tesseract.js-OCR-blue.svg)
+![PyTorch](https://img.shields.io/badge/PyTorch-CNN%20Classifier-red.svg)
 
 **एक AI-संचालित डिजिटल स्क्राइब जसले नेपाली नागरिकहरूलाई सरकारी कागजातहरू सजिलै उत्पन्न गर्न मद्दत गर्दछ।**
 
@@ -22,9 +22,11 @@
 
 **Sarkari-Sarathi** is a comprehensive document generation system designed for Nepal's local government services. It provides three input methods — voice, handwriting, and keyboard — so that citizens of all literacy levels can fill out official government forms easily.
 
+All AI components run **locally on CPU** — no GPU, no paid API, fully offline-capable.
+
 ### What It Does
 1. User selects a document type (birth registration, death registration, etc.)
-2. Fills in the form using **voice** (Nepali speech recognition), **handwriting** (canvas + OCR), or **keyboard** (with English-to-Nepali transliteration)
+2. Fills in the form using **voice** (Nepali speech recognition), **handwriting** (canvas + CNN classifier), or **keyboard** (with English-to-Nepali transliteration)
 3. The system generates a **print-ready PDF** in official government format
 
 ## 🎯 Features
@@ -32,8 +34,8 @@
 ### Multi-Modal Input
 | Input Method | Description | Technology |
 |---|---|---|
-| 🎤 **आवाज (Voice)** | Speak in Nepali, get Devanagari text | Fine-tuned Whisper ASR (`amitpant7/Nepali-Automatic-Speech-Recognition`) |
-| ✍️ **हस्तलेखन (Handwriting)** | Draw/write on canvas, get recognized text | Tesseract.js OCR (client-side) + Gemini Vision (server fallback) |
+| 🎤 **आवाज (Voice)** | Speak in Nepali, get Devanagari text | Fine-tuned Nepali Whisper ASR + Whisper tiny (CPU fallback) |
+| ✍️ **हस्तलेखन (Handwriting)** | Draw/write on canvas, get recognized text | CNN word classifier (PyTorch) + Tesseract.js OCR (fallback) |
 | ⌨️ **किबोर्ड (Keyboard)** | Type in English, auto-transliterate to Nepali | Custom rule-based transliteration with 60+ conjunct patterns |
 
 ### Supported Government Documents (9 Templates)
@@ -45,13 +47,14 @@
 | **Utilities** | विद्युत जडान (Electricity) · खानेपानी जडान (Water) · बाटो पहुँच (Road Access) |
 
 ### Key Highlights
+- **Fully Free & Offline** — No paid APIs, no GPU required, runs entirely on CPU
 - **No Login Required** — Stateless, session-based operation
 - **Elder-Friendly UI** — Simple 3-step guided flow (Select → Fill → Download)
 - **Cascading Location Dropdowns** — All 7 provinces, 77 districts, 700+ municipalities
 - **Real-time Transliteration** — Type English, see Nepali instantly
 - **Grammar Correction** — Rule-based Nepali particle and punctuation normalization
 - **Bilingual Fields** — Supports both Nepali and English input where needed
-- **Offline ASR** — Works without internet for speech recognition (model cached locally)
+- **Alternatives Picker** — CNN returns top-k word choices with confidence scores
 
 ## 🛠️ Technology Stack
 
@@ -62,8 +65,8 @@
 | **Python 3.11** | Core runtime |
 | **HuggingFace Transformers** | ASR model inference |
 | **Fine-tuned Nepali Whisper** | Primary speech recognition (`amitpant7/Nepali-Automatic-Speech-Recognition`) |
-| **OpenAI Whisper (base)** | Fallback speech recognition |
-| **Google Gemini 2.0 Flash** | AI document generation & handwriting recognition |
+| **OpenAI Whisper (tiny)** | Fallback speech recognition (CPU-optimized, 72MB) |
+| **PyTorch CNN Classifier** | Handwriting word recognition (237 Nepali word classes, ~140K params) |
 | **ReportLab** | PDF generation with Nepali font support |
 | **PyDub + FFmpeg** | Audio format conversion (via `imageio-ffmpeg`) |
 | **Rule-based Grammar** | Nepali text correction (particle attachment, दण्ड punctuation) |
@@ -73,34 +76,35 @@
 |---|---|
 | **HTML5 / Tailwind CSS** | Responsive UI |
 | **Vanilla JavaScript** | Form logic, transliteration engine |
-| **Tesseract.js** | Client-side OCR for handwriting (Nepali + English) |
+| **Tesseract.js** | Client-side OCR fallback for handwriting (Nepali + English) |
 | **Canvas API** | Free-form handwriting input |
 | **MediaRecorder API** | Voice recording from browser |
 
-### AI Models
+### AI Models (All Local, All Free)
 | Model | Role |
 |---|---|
 | `amitpant7/Nepali-Automatic-Speech-Recognition` | Primary Nepali ASR (fine-tuned Whisper) |
-| `openai/whisper-base` | Fallback ASR |
-| `gemini-2.0-flash` | Document generation, handwriting OCR fallback |
+| `openai/whisper-tiny` | Fallback ASR (CPU-optimized) |
+| `NepaliWordCNN` | Handwriting word classifier (237 classes, PyTorch) |
+| `Tesseract.js` | Client-side OCR fallback |
 
 ## 🏗️ Architecture
 
 ```
 ┌───────────────────────────┐     ┌───────────────────────────┐     ┌────────────────────┐
-│        Frontend           │     │         Backend           │     │    External AI     │
-│       (Browser)           │◄───►│        (FastAPI)          │◄───►│                    │
-│                           │     │                           │     │  Gemini 2.0 Flash  │
-│  • Voice Recording        │     │  • /transcribe-audio      │     │  (doc generation)  │
-│  • Canvas Handwriting     │     │  • /recognize-handwriting │     │                    │
-│  • English→Nepali Translit│     │  • /generate-document     │     └────────────────────┘
-│  • Tesseract.js OCR       │     │  • /transliterate         │
-│  • Cascading Dropdowns    │     │  • /correct-grammar       │     ┌────────────────────┐
-│                           │     │  • /locations             │     │   Local Models     │
-│                           │     │  • PDF Generation         │◄───►│                    │
-│                           │     │  • Grammar Correction     │     │  Nepali Whisper    │
-│                           │     │  • FFmpeg Audio Convert   │     │  Whisper (base)    │
-└───────────────────────────┘     └───────────────────────────┘     └────────────────────┘
+│        Frontend           │     │         Backend           │     │    Local Models    │
+│       (Browser)           │◄───►│        (FastAPI)          │◄───►│   (CPU only)       │
+│                           │     │                           │     │                    │
+│  • Voice Recording        │     │  • /transcribe-audio      │     │  Nepali Whisper    │
+│  • Canvas Handwriting     │     │  • /recognize-handwriting │     │  Whisper (tiny)    │
+│  • English→Nepali Translit│     │  • /generate-document     │     │  CNN Word Classif. │
+│  • Tesseract.js OCR       │     │  • /transliterate         │     │                    │
+│  • Alternatives Picker    │     │  • /correct-grammar       │     └────────────────────┘
+│  • Cascading Dropdowns    │     │  • /locations             │
+│                           │     │  • PDF Generation         │
+│                           │     │  • Grammar Correction     │
+│                           │     │  • FFmpeg Audio Convert   │
+└───────────────────────────┘     └───────────────────────────┘
 ```
 
 ### Processing Pipelines
@@ -112,9 +116,11 @@ Mic → MediaRecorder (WebM) → /transcribe-audio → FFmpeg (→WAV 16kHz) →
 
 **Handwriting Pipeline:**
 ```
-Canvas Drawing → Preprocessing (crop, binarize, scale) → Tesseract.js OCR → Grammar Correction → Field
-                                                           ↓ (fallback)
-                                                      /recognize-handwriting → Gemini Vision
+Canvas Drawing → /recognize-handwriting → CNN Word Classifier (237 classes)
+                                              ↓ top-k alternatives
+                                         Alternatives Picker → User selects → Grammar Correction → Field
+                                              ↓ (low confidence fallback)
+                                         Tesseract.js OCR (client-side)
 ```
 
 **Keyboard Pipeline:**
@@ -132,7 +138,6 @@ Sarkari-Sarathi/
 │   ├── grammar.py               # Rule-based Nepali grammar correction
 │   ├── locations.json           # Nepal administrative data (7 provinces, 77 districts, 700+ municipalities)
 │   ├── requirements.txt         # Python dependencies
-│   ├── .env.config              # Environment variables (Gemini API key)
 │   ├── templates/               # 9 document templates (JSON)
 │   │   ├── birth_registration.json
 │   │   ├── death_registration.json
@@ -146,16 +151,22 @@ Sarkari-Sarathi/
 │   ├── generated_documents/     # Output PDFs (auto-created)
 │   └── static/
 │       ├── fonts/               # NotoSansDevanagari font for PDF
-│       ├── handwriting/         # Browser handwriting JS modules
-│       └── handwriting_model/   # Model config for handwriting
+│       └── handwriting_model/   # CNN model checkpoint + metadata
+│           ├── nepali_word_cnn.pt
+│           ├── model_meta.json
+│           └── vocab.json
 ├── frontend/
-│   ├── index.html               # Main application UI
-│   ├── script.js                # Core logic — transliteration, forms, voice, dropdowns
+│   ├── index.html               # Main application UI (with alternatives picker)
+│   ├── script.js                # Core logic — transliteration, forms, voice, dropdowns, CNN UI
 │   └── tesseract_handwriting.js # Tesseract.js OCR wrapper with preprocessing
-├── handwriting_recognition/     # Handwriting model training tools
-│   ├── model/                   # BiLSTM+CTC architecture
-│   ├── browser/                 # TensorFlow.js inference modules
-│   └── tools/                   # Data collection utilities
+├── handwriting_recognition/     # CNN handwriting model
+│   ├── cnn_model/               # Word-level CNN classifier
+│   │   ├── vocab.py             # 237-word vocabulary (names, places, relations)
+│   │   ├── model.py             # 3-layer CNN architecture (~140K params)
+│   │   ├── data_generator.py    # Synthetic training data with augmentation
+│   │   ├── train.py             # Training pipeline with early stopping
+│   │   └── inference.py         # Production inference wrapper
+│   └── data/                    # Collected handwriting samples
 ├── Nepali_speech_to_text/       # ASR training & datasets
 │   ├── src/                     # Training scripts
 │   ├── notebook/                # Fine-tuning notebooks
@@ -167,8 +178,8 @@ Sarkari-Sarathi/
 
 ### Prerequisites
 - **Python 3.11+**
-- **CUDA GPU** (recommended for faster ASR inference; CPU works but slower)
 - **Git**
+- CPU is sufficient — no GPU required
 
 ### Quick Start
 
@@ -190,27 +201,20 @@ source venv/bin/activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-#if you want to install the latest version of transformers and imageio-ffmpeg, you can use:
-#pip install --upgrade transformers imageio-ffmpeg
-# 4. Configure Gemini API key
-# Create/edit .env.config:
-#   GEMINI_API_KEY=your_key_here
-
-# 5. Start server
+# 4. Start server
 python main.py
 
-# 6. Open in browser
+# 5. Open in browser
 # http://localhost:8000/app
 ```
 
-> **Note:** FFmpeg is auto-configured via `imageio-ffmpeg` — no manual install needed. The Nepali Whisper model downloads automatically on first run (~1GB).
+> **Note:** FFmpeg is auto-configured via `imageio-ffmpeg` — no manual install needed. The Nepali Whisper model downloads automatically on first run (~1GB). Whisper tiny fallback downloads on first use (~72MB).
 
 ### Environment Variables
 
-Create `.env.config` in the `backend/` directory:
+Create `.env.config` in the `backend/` directory (optional):
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
 HOST=0.0.0.0
 PORT=8000
 ```
@@ -221,11 +225,11 @@ PORT=8000
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/app` | Serve the frontend application |
-| `GET` | `/health` | Health check |
+| `GET` | `/health` | Health check (CNN, Whisper, ASR, Tesseract status) |
 | `POST` | `/transcribe-audio` | Transcribe audio file to Nepali text |
 | `POST` | `/transliterate` | Convert English text to Nepali |
 | `POST` | `/correct-grammar` | Apply Nepali grammar correction |
-| `POST` | `/recognize-handwriting` | Extract text from handwriting image (Gemini Vision) |
+| `POST` | `/recognize-handwriting` | Recognize handwriting (CNN + Tesseract fallback) |
 | `POST` | `/generate-document` | Generate PDF from form data |
 | `GET` | `/download-document/{filename}` | Download generated PDF |
 
@@ -248,13 +252,13 @@ PORT=8000
 
 **Voice Input:**
 - Speak clearly in Nepali at normal pace
-- Works best with a good microphone
-- Short phrases (5–10 seconds) give better accuracy
+- Short phrases (3–6 seconds) give better accuracy
+- 16kHz mono audio with silence trimming for efficiency
 
 **Handwriting:**
-- Write large, clear Devanagari characters
-- Use the full canvas area
-- Works best with a stylus/touchscreen
+- Write one Nepali word at a time on the canvas
+- CNN returns top-k alternatives — select the correct word
+- Works best with clear, large Devanagari characters
 
 **Keyboard:**
 - Type English phonetically (e.g., `namaste` → `नमस्ते`)
@@ -266,13 +270,14 @@ PORT=8000
 - Session-based operation — data cleared after download
 - Audio files deleted immediately after transcription
 - No biometric data retained
+- No external API calls — all processing is local
 - CORS-configured API endpoints
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
+3. Follow [commit message guidelines](rules%20of%20commit) (`<type>(<scope>): <description>`)
 4. Push to branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
@@ -286,12 +291,12 @@ This project is licensed under the MIT License.
 | [Nepali ASR](https://huggingface.co/amitpant7/Nepali-Automatic-Speech-Recognition) | Apache 2.0 |
 | [OpenAI Whisper](https://github.com/openai/whisper) | MIT |
 | [Tesseract.js](https://github.com/naptha/tesseract.js) | Apache 2.0 |
+| [PyTorch](https://github.com/pytorch/pytorch) | BSD-3-Clause |
 
 ## 🙏 Acknowledgments
 
 - **amitpant7** — Fine-tuned Nepali ASR model
 - **OpenAI** — Whisper speech recognition
-- **Google** — Gemini AI for document generation
 - **HuggingFace** — Transformers library and model hosting
 - **Tesseract.js** — Client-side OCR engine
 - **Nepal Government** — Document format references
