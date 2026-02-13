@@ -191,12 +191,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Nepali word CNN classifier")
     parser.add_argument("--samples", type=int, default=50,
                         help="Augmented samples per word (default: 50)")
-    parser.add_argument("--epochs", type=int, default=30,
-                        help="Max training epochs (default: 30)")
+    parser.add_argument("--epochs", type=int, default=100,
+                        help="Max training epochs (default: 100)")
     parser.add_argument("--batch", type=int, default=64,
                         help="Batch size (default: 64)")
-    parser.add_argument("--lr", type=float, default=0.001,
-                        help="Initial learning rate (default: 0.001)")
+    parser.add_argument("--lr", type=float, default=0.01,
+                        help="Initial learning rate (default: 0.01)")
     parser.add_argument("--patience", type=int, default=8,
                         help="Early stopping patience (default: 8)")
     parser.add_argument("--save-samples", action="store_true",
