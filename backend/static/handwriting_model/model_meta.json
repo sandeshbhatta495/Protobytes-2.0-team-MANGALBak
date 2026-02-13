@@ -4,8 +4,8 @@
   "vocab_size": 237,
   "img_height": 64,
   "img_width": 192,
-  "best_val_acc": 0.0056,
-  "best_epoch": 1,
+  "best_val_acc": 0.17966101694915254,
+  "best_epoch": 18,
   "vocab": [
     "राम",
     "सीता",
