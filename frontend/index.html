@@ -224,6 +224,58 @@
             from { transform: translateX(100%); opacity: 0; }
             to { transform: translateX(0); opacity: 1; }
         }
+
+        /* Handwriting alternatives picker */
+        .alternatives-section {
+            background: #f0fdf4;
+            border: 1px solid #86efac;
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 12px;
+        }
+        .alternatives-section.hidden {
+            display: none;
+        }
+        .alternatives-label {
+            font-size: 13px;
+            color: #15803d;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+        .alternatives-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .alternative-btn {
+            padding: 8px 16px;
+            background: white;
+            border: 2px solid #86efac;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+        .alternative-btn:hover {
+            background: #dcfce7;
+            border-color: #22c55e;
+        }
+        .alternative-btn.selected {
+            background: #22c55e;
+            color: white;
+            border-color: #22c55e;
+        }
+        .confidence-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .confidence-high { background: #dcfce7; color: #15803d; }
+        .confidence-medium { background: #fef3c7; color: #92400e; }
+        .confidence-low { background: #fee2e2; color: #991b1b; }
     </style>
 </head>
 <body>
@@ -415,6 +467,16 @@
                 </h3>
                 <p class="text-sm text-gray-500 mb-3">तलको क्षेत्रमा नेपालीमा लेख्नुहोस्</p>
                 <canvas id="modalCanvas" width="580" height="280"></canvas>
+                
+                <!-- Recognition Results / Alternatives Picker -->
+                <div id="alternativesSection" class="alternatives-section hidden">
+                    <div class="alternatives-label">
+                        <i class="fas fa-magic mr-1"></i>पहिचान नतिजा:
+                        <span id="recognitionConfidence" class="confidence-badge"></span>
+                    </div>
+                    <div id="alternativesList" class="alternatives-list"></div>
+                </div>
+                
                 <div class="mt-4 flex justify-between items-center">
                     <button onclick="clearModalCanvas()" class="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition">
                         <i class="fas fa-eraser mr-2"></i>मेटाउनुहोस्
@@ -423,8 +485,11 @@
                         <button onclick="closeFieldCanvas()" class="bg-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-400 transition">
                             रद्द गर्नुहोस्
                         </button>
-                        <button onclick="submitFieldCanvas()" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 transition">
+                        <button onclick="submitFieldCanvas()" id="recognizeBtn" class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 transition">
                             <i class="fas fa-check mr-2"></i>पहिचान गर्नुहोस्
+                        </button>
+                        <button onclick="confirmSelectedWord()" id="confirmWordBtn" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition hidden">
+                            <i class="fas fa-check-double mr-2"></i>पुष्टि गर्नुहोस्
                         </button>
                     </div>
                 </div>

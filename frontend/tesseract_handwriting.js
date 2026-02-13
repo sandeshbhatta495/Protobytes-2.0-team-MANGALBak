@@ -44,6 +44,8 @@
                     tessedit_pageseg_mode: '6',   // Uniform block of text
                     preserve_interword_spaces: '1',
                     tessedit_char_whitelist: '',   // Allow all characters
+                    textord_heavy_nr: '1',         // Assume noisy/handwritten input
+                    edges_max_children_per_outline: '40', // Handle complex Devanagari
                 });
 
                 isInitialized = true;
@@ -122,9 +124,11 @@
         const cropH = Math.min(origHeight - cropY, bounds.height + PADDING * 2);
 
         // Step 3: Create upscaled output canvas
-        const SCALE = 3;
-        const outW = cropW * SCALE;
-        const outH = cropH * SCALE;
+        // Aim for at least ~1800px width for Tesseract (300 DPI equiv)
+        const SCALE = Math.max(3, Math.ceil(1800 / cropW));
+        const cappedScale = Math.min(SCALE, 5);  // cap at 5x
+        const outW = cropW * cappedScale;
+        const outH = cropH * cappedScale;
 
         const outCanvas = document.createElement('canvas');
         outCanvas.width = outW;
@@ -147,14 +151,37 @@
         const outData = outCtx.getImageData(0, 0, outW, outH);
         const pixels = outData.data;
 
-        // Also read original crop to get alpha info at original scale
-        // We'll use the composited image brightness instead
+        // Compute Otsu threshold for adaptive binarization
+        const histogram = new Array(256).fill(0);
         for (let i = 0; i < pixels.length; i += 4) {
-            const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
-            const brightness = (r + g + b) / 3;
+            const brightness = Math.round((pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3);
+            histogram[brightness]++;
+        }
+        const totalPixels = pixels.length / 4;
+        let sumAll = 0;
+        for (let t = 0; t < 256; t++) sumAll += t * histogram[t];
+        let sumBg = 0, wBg = 0, maxVariance = 0, bestThreshold = 128;
+        for (let t = 0; t < 256; t++) {
+            wBg += histogram[t];
+            if (wBg === 0) continue;
+            const wFg = totalPixels - wBg;
+            if (wFg === 0) break;
+            sumBg += t * histogram[t];
+            const meanBg = sumBg / wBg;
+            const meanFg = (sumAll - sumBg) / wFg;
+            const variance = wBg * wFg * (meanBg - meanFg) * (meanBg - meanFg);
+            if (variance > maxVariance) {
+                maxVariance = variance;
+                bestThreshold = t;
+            }
+        }
+        // Pad threshold slightly to preserve thin strokes
+        const binThreshold = Math.min(bestThreshold + 20, 220);
 
-            // Strict binarization: anything noticeably darker than white = stroke
-            if (brightness < 200) {
+        for (let i = 0; i < pixels.length; i += 4) {
+            const brightness = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+
+            if (brightness < binThreshold) {
                 pixels[i] = 0;
                 pixels[i + 1] = 0;
                 pixels[i + 2] = 0;
@@ -167,28 +194,31 @@
             }
         }
 
-        // Step 6: Mild dilation — thicken strokes by 1 pixel
+        // Step 6: Two-pass dilation — thicken strokes for handwriting
         // This helps Tesseract with thin hand-drawn strokes
         const dilated = new Uint8ClampedArray(pixels.length);
         dilated.set(pixels); // copy
 
-        for (let y = 1; y < outH - 1; y++) {
-            for (let x = 1; x < outW - 1; x++) {
-                const idx = (y * outW + x) * 4;
-                if (pixels[idx] === 0) continue; // Already black
+        // Two passes of 4-connected dilation
+        for (let pass = 0; pass < 2; pass++) {
+            const src = pass === 0 ? pixels : new Uint8ClampedArray(dilated);
+            for (let y = 1; y < outH - 1; y++) {
+                for (let x = 1; x < outW - 1; x++) {
+                    const idx = (y * outW + x) * 4;
+                    if (src[idx] === 0) { dilated[idx] = 0; dilated[idx+1] = 0; dilated[idx+2] = 0; dilated[idx+3] = 255; continue; }
 
-                // Check 4-connected neighbors in original
-                const up    = ((y - 1) * outW + x) * 4;
-                const down  = ((y + 1) * outW + x) * 4;
-                const left  = (y * outW + (x - 1)) * 4;
-                const right = (y * outW + (x + 1)) * 4;
+                    const up    = ((y - 1) * outW + x) * 4;
+                    const down  = ((y + 1) * outW + x) * 4;
+                    const left  = (y * outW + (x - 1)) * 4;
+                    const right = (y * outW + (x + 1)) * 4;
 
-                if (pixels[up] === 0 || pixels[down] === 0 ||
-                    pixels[left] === 0 || pixels[right] === 0) {
-                    dilated[idx] = 0;
-                    dilated[idx + 1] = 0;
-                    dilated[idx + 2] = 0;
-                    dilated[idx + 3] = 255;
+                    if (src[up] === 0 || src[down] === 0 ||
+                        src[left] === 0 || src[right] === 0) {
+                        dilated[idx] = 0;
+                        dilated[idx + 1] = 0;
+                        dilated[idx + 2] = 0;
+                        dilated[idx + 3] = 255;
+                    }
                 }
             }
         }
@@ -224,7 +254,7 @@
             let bestText = '';
             let bestConf = 0;
 
-            // PSM 6 = Uniform block of text
+            // PSM 6 = Uniform block of text (default, already set)
             const result6 = await worker.recognize(blob);
             const text6 = result6.data.text.trim();
             const conf6 = result6.data.confidence;
@@ -235,25 +265,40 @@
                 bestConf = conf6;
             }
 
-            // If confidence is low, also try PSM 7 (single text line) and PSM 13 (raw line)
-            if (bestConf < 60 || bestText.length === 0) {
-                try {
-                    await worker.setParameters({ tessedit_pageseg_mode: '7' });
-                    const result7 = await worker.recognize(blob);
-                    const text7 = result7.data.text.trim();
-                    const conf7 = result7.data.confidence;
-                    console.log(`[TesseractHandwriting] PSM7: "${text7}" (conf: ${conf7})`);
-                    
-                    if (conf7 > bestConf && text7.length > 0) {
-                        bestText = text7;
-                        bestConf = conf7;
-                    }
-                    // Reset back to PSM 6
-                    await worker.setParameters({ tessedit_pageseg_mode: '6' });
-                } catch(e) {
-                    console.warn('[TesseractHandwriting] PSM7 attempt failed:', e);
+            // Always try PSM 7 (single text line) — often better for single-field input
+            try {
+                await worker.setParameters({ tessedit_pageseg_mode: '7' });
+                const result7 = await worker.recognize(blob);
+                const text7 = result7.data.text.trim();
+                const conf7 = result7.data.confidence;
+                console.log(`[TesseractHandwriting] PSM7: "${text7}" (conf: ${conf7})`);
+
+                if (conf7 > bestConf && text7.length > 0) {
+                    bestText = text7;
+                    bestConf = conf7;
                 }
+            } catch(e) {
+                console.warn('[TesseractHandwriting] PSM7 attempt failed:', e);
             }
+
+            // Also try PSM 13 (raw line) for very short text like names
+            try {
+                await worker.setParameters({ tessedit_pageseg_mode: '13' });
+                const result13 = await worker.recognize(blob);
+                const text13 = result13.data.text.trim();
+                const conf13 = result13.data.confidence;
+                console.log(`[TesseractHandwriting] PSM13: "${text13}" (conf: ${conf13})`);
+
+                if (conf13 > bestConf && text13.length > 0) {
+                    bestText = text13;
+                    bestConf = conf13;
+                }
+            } catch(e) {
+                console.warn('[TesseractHandwriting] PSM13 attempt failed:', e);
+            }
+
+            // Reset back to PSM 6 for next call
+            await worker.setParameters({ tessedit_pageseg_mode: '6' });
 
             // Filter out garbage results (very short, only special chars, etc.)
             bestText = cleanOCRResult(bestText);

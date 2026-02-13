@@ -20,6 +20,11 @@ let isModalDrawing = false;
 let modalLastX = 0;
 let modalLastY = 0;
 
+// CNN alternatives state
+let pendingAlternatives = [];
+let selectedWordIndex = 0;
+let lastRecognitionResult = null;
+
 // ===== API BASE URL =====
 function getApiBase() {
     var o = window.location.origin;
@@ -962,6 +967,8 @@ function closeFieldCanvas() {
         setFieldMode(activeCanvasFieldId, 'typing');
     }
     activeCanvasFieldId = null;
+    // Reset alternatives UI
+    resetAlternativesUI();
 }
 
 function clearModalCanvas() {
@@ -974,6 +981,8 @@ function clearModalCanvas() {
     if (typeof OfflineHandwriting !== 'undefined') {
         OfflineHandwriting.clearCanvasStrokes('modalCanvas');
     }
+    // Reset alternatives when canvas is cleared
+    resetAlternativesUI();
 }
 
 async function submitFieldCanvas() {
@@ -1003,14 +1012,12 @@ async function submitFieldCanvas() {
 
     try {
         var recognizedText = '';
+        var serverResult = null;
         
-        // Strategy: Try server-side OCR first (more reliable with CLI Tesseract),
-        // then fall back to client-side Tesseract.js
-        
-        // Method 1: Server-side Tesseract (better for handwriting)
+        // ── Strategy: Try server API first (CNN or Tesseract) ──────────────
         try {
             var imageData64 = canvas.toDataURL('image/png');
-            console.log('[Handwriting] Trying server API for recognition');
+            console.log('[Handwriting] Sending to server API...');
 
             var response = await fetch(API_BASE + '/recognize-handwriting', {
                 method: 'POST',
@@ -1018,18 +1025,25 @@ async function submitFieldCanvas() {
                 body: JSON.stringify({ image: imageData64 })
             });
 
-            var result = await response.json();
-            console.log('[Handwriting] Server response:', result);
+            serverResult = await response.json();
+            console.log('[Handwriting] Server response:', serverResult);
 
-            if (response.ok && result.text && result.text.trim().length > 0) {
-                recognizedText = result.text.trim();
-                console.log('[Handwriting] Server OCR result:', recognizedText);
+            if (response.ok && serverResult.text && serverResult.text.trim().length > 0) {
+                recognizedText = serverResult.text.trim();
+                lastRecognitionResult = serverResult;
+                
+                // If CNN returned alternatives, show them for user selection
+                if (serverResult.method === 'cnn' && serverResult.alternatives && serverResult.alternatives.length > 0) {
+                    hideLoading();
+                    showAlternatives(serverResult);
+                    return; // Wait for user to select
+                }
             }
         } catch (serverError) {
             console.warn('[Handwriting] Server API unavailable:', serverError.message);
         }
         
-        // Method 2: Client-side Tesseract.js (fallback)
+        // ── Fallback: Client-side Tesseract.js ──────────────────────────────
         if (!recognizedText && typeof TesseractHandwriting !== 'undefined' && TesseractHandwriting.isAvailable()) {
             try {
                 console.log('[Handwriting] Using Tesseract.js OCR (fallback)');
@@ -1047,38 +1061,11 @@ async function submitFieldCanvas() {
             }
         }
         
-        // If still no result, show error
-        if (!recognizedText) {
-            showError('हस्तलेख पहिचान गर्न सकेन। कृपया स्पष्ट लेख्नुहोस् वा किबोर्ड प्रयोग गर्नुहोस्।');
-            hideLoading();
-            return;
-        }
-
+        // ── Apply result to field ───────────────────────────────────────────
         if (recognizedText) {
-            // Skip grammar correction for English fields
-            var correctedText = recognizedText;
-            if (!isEnglishField(fieldId)) {
-                correctedText = await correctNepaliGrammar(recognizedText, fieldId);
-            }
-
-            var state = fieldStates[fieldId];
-            if (state) {
-                state.setValue(correctedText, 'handwriting');
-                console.log('[Handwriting] Field', fieldId, 'set to:', correctedText);
-            } else {
-                // Fallback: directly set the DOM element
-                var inputEl = document.getElementById(fieldId);
-                if (inputEl) {
-                    inputEl.value = correctedText;
-                    inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                    console.log('[Handwriting] Direct DOM set for', fieldId, ':', correctedText);
-                }
-            }
-            showSuccess('हस्तलेख पहिचान सफल!');
-            closeFieldCanvas();
+            await applyRecognizedText(recognizedText, fieldId);
         } else {
-            showError('पाठ पहिचान गर्न सकेन। कृपया स्पष्ट रूपमा लेख्नुहोस्।');
+            showError('हस्तलेख पहिचान गर्न सकेन। कृपया स्पष्ट लेख्नुहोस् वा किबोर्ड प्रयोग गर्नुहोस्।');
         }
     } catch (error) {
         console.error('[Handwriting] Error:', error);
@@ -1086,6 +1073,121 @@ async function submitFieldCanvas() {
     } finally {
         hideLoading();
     }
+}
+
+/** Show CNN alternatives for user selection */
+function showAlternatives(result) {
+    var section = document.getElementById('alternativesSection');
+    var list = document.getElementById('alternativesList');
+    var badge = document.getElementById('recognitionConfidence');
+    var recognizeBtn = document.getElementById('recognizeBtn');
+    var confirmBtn = document.getElementById('confirmWordBtn');
+    
+    if (!section || !list) return;
+    
+    // Build alternatives array: main result + top alternatives
+    pendingAlternatives = [{ word: result.text, confidence: result.confidence }];
+    if (result.alternatives) {
+        result.alternatives.forEach(function(alt) {
+            if (alt.word !== result.text) {
+                pendingAlternatives.push(alt);
+            }
+        });
+    }
+    
+    // Show confidence badge
+    var conf = Math.round((result.confidence || 0) * 100);
+    var confClass = conf >= 70 ? 'confidence-high' : (conf >= 40 ? 'confidence-medium' : 'confidence-low');
+    badge.className = 'confidence-badge ' + confClass;
+    badge.textContent = conf + '%';
+    
+    // Render alternative buttons
+    list.innerHTML = '';
+    pendingAlternatives.forEach(function(alt, idx) {
+        var btn = document.createElement('button');
+        btn.className = 'alternative-btn' + (idx === 0 ? ' selected' : '');
+        btn.textContent = alt.word;
+        btn.title = Math.round((alt.confidence || 0) * 100) + '% विश्वास';
+        btn.onclick = function() { selectAlternative(idx); };
+        list.appendChild(btn);
+    });
+    
+    selectedWordIndex = 0;
+    
+    // Show/hide buttons
+    section.classList.remove('hidden');
+    if (recognizeBtn) recognizeBtn.classList.add('hidden');
+    if (confirmBtn) confirmBtn.classList.remove('hidden');
+}
+
+/** User selects an alternative word */
+function selectAlternative(idx) {
+    selectedWordIndex = idx;
+    var list = document.getElementById('alternativesList');
+    if (!list) return;
+    
+    Array.from(list.children).forEach(function(btn, i) {
+        btn.classList.toggle('selected', i === idx);
+    });
+}
+
+/** Confirm the selected word and apply to field */
+async function confirmSelectedWord() {
+    if (pendingAlternatives.length === 0) return;
+    
+    var selectedWord = pendingAlternatives[selectedWordIndex].word;
+    var fieldId = activeCanvasFieldId;
+    
+    showLoading();
+    await applyRecognizedText(selectedWord, fieldId);
+    hideLoading();
+    
+    // Reset UI
+    resetAlternativesUI();
+    closeFieldCanvas();
+}
+
+/** Apply recognized text to field with grammar correction */
+async function applyRecognizedText(text, fieldId) {
+    // Skip grammar correction for English fields
+    var correctedText = text;
+    if (!isEnglishField(fieldId)) {
+        correctedText = await correctNepaliGrammar(text, fieldId);
+    }
+
+    var state = fieldStates[fieldId];
+    if (state) {
+        state.setValue(correctedText, 'handwriting');
+        console.log('[Handwriting] Field', fieldId, 'set to:', correctedText);
+    } else {
+        // Fallback: directly set the DOM element
+        var inputEl = document.getElementById(fieldId);
+        if (inputEl) {
+            inputEl.value = correctedText;
+            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+            console.log('[Handwriting] Direct DOM set for', fieldId, ':', correctedText);
+        }
+    }
+    showSuccess('हस्तलेख पहिचान सफल!');
+    closeFieldCanvas();
+}
+
+/** Reset alternatives UI state */
+function resetAlternativesUI() {
+    var section = document.getElementById('alternativesSection');
+    var list = document.getElementById('alternativesList');
+    var recognizeBtn = document.getElementById('recognizeBtn');
+    var confirmBtn = document.getElementById('confirmWordBtn');
+    
+    if (section) section.classList.add('hidden');
+    if (list) list.innerHTML = '';
+    if (recognizeBtn) recognizeBtn.classList.remove('hidden');
+    if (confirmBtn) confirmBtn.classList.add('hidden');
+    
+    pendingAlternatives = [];
+    selectedWordIndex = 0;
+    lastRecognitionResult = null;
 }
 
 /** Call server to correct Nepali grammar */
@@ -1516,6 +1618,8 @@ window.openFieldCanvas = openFieldCanvas;
 window.closeFieldCanvas = closeFieldCanvas;
 window.clearModalCanvas = clearModalCanvas;
 window.submitFieldCanvas = submitFieldCanvas;
+window.selectAlternative = selectAlternative;
+window.confirmSelectedWord = confirmSelectedWord;
 window.goToStep = goToStep;
 window.goToStepSafe = goToStepSafe;
 window.goBackToForm = goBackToForm;
