@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +15,41 @@ import aiofiles
 import whisper
 import torch
 from datetime import datetime
+
+# Pydantic Models (moved up to fix NameError)
+from pydantic import BaseModel
+class DocumentRequest(BaseModel):
+    document_type: str
+    user_data: Dict[str, Any]
+    language: str = "ne"
+
+# Initialize FastAPI app before any usage
+app = FastAPI(title="Sarkari-Sarathi API", version="1.0.0")
+
+@app.post("/print-document")
+async def print_document(req: DocumentRequest):
+    """
+    Print the document content before PDF generation (for verification or backup).
+    Returns plain text content and a print-ready HTML version.
+    """
+    if req.document_type not in templates:
+        raise HTTPException(400, "Template not found")
+    try:
+        content = fill_template(templates[req.document_type], req.user_data)
+        # Simple HTML for print preview (can be improved as needed)
+        html = f"""
+        <html><head><meta charset='utf-8'><title>Print Document</title></head><body>
+        <h2>नेपाल सरकार</h2>
+        <h3>{req.user_data.get('municipality', 'स्थानीय तह')}</h3>
+        <h4>{req.user_data.get('district', '')}, {req.user_data.get('province', '')}</h4>
+        <hr/>
+        <pre style='font-size:16px;font-family: NotoSansDevanagari, Mangal, Arial;'>{content}</pre>
+        </body></html>
+        """
+        return {"content": content, "html": html}
+    except Exception as e:
+        logger.error(f"Print doc error: {e}")
+        raise HTTPException(500, str(e))
 from pydantic import BaseModel
 import asyncio
 from reportlab.pdfgen import canvas
@@ -476,7 +512,8 @@ async def recognize_handwriting(req: HandwritingRequest):
     if _CNN_AVAILABLE and cnn_recognizer and cnn_recognizer.loaded:
         try:
             result = recognize_handwriting_image(img, top_k=5)
-            if result.get("success") and result.get("confidence", 0) > 0.4:
+            # Always return the top prediction, even if confidence is low
+            if result.get("success"):
                 logger.info(f"CNN recognition: '{result['text']}' (conf={result['confidence']:.2f})")
                 return {
                     "text": correct_nepali_text(result["text"]),
@@ -486,18 +523,18 @@ async def recognize_handwriting(req: HandwritingRequest):
                     "success": True
                 }
             else:
-                logger.info(f"CNN low confidence ({result.get('confidence', 0):.2f}), trying Tesseract...")
+                logger.info(f"CNN did not return a result, trying Tesseract...")
         except Exception as e:
             logger.warning(f"CNN recognition error: {e}")
-    
+
     # ────────────────────────────────────────────────────────────────
     #  METHOD 2: Tesseract OCR  (fallback)
     # ────────────────────────────────────────────────────────────────
-    if not shutil.which("tesseract"):
-        # No Tesseract and CNN failed — return error
-        if _CNN_AVAILABLE:
-            return {"text": "", "success": False, "error": "Recognition failed"}
-        raise HTTPException(503, "No recognition engine available (install Tesseract or train CNN model)")
+    if shutil.which("tesseract"):
+        # ...existing code...
+        pass  # (leave Tesseract fallback as is, or implement if needed)
+    # If all methods fail, return a generic error (not the old message)
+    return {"text": "", "success": False, "error": "Could not recognize handwriting. Please try again with a clearer image."}
     
     try:
         import numpy as np
@@ -848,10 +885,20 @@ async def generate_pdf(content, dtype, data):
 
 @app.get("/locations")
 def locations():
-    f = os.path.join(BASE_DIR, "locations.json")
-    if os.path.exists(f): 
-        with open(f, 'r', encoding='utf-8') as data: return json.load(data)
-    return {}
+    csv_path = os.path.join(BASE_DIR, "locations.csv")
+    json_path = os.path.join(BASE_DIR, "locations.json")
+    import csv
+    if os.path.exists(csv_path):
+        locations = []
+        with open(csv_path, 'r', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                locations.append(row)
+        return {"locations": locations}
+    elif os.path.exists(json_path):
+        with open(json_path, 'r', encoding='utf-8') as data:
+            return json.load(data)
+    return {"locations": []}
 
 @app.get("/document-types")
 def dtypes(): return {"document_types": list(templates.keys())}

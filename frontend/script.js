@@ -468,11 +468,14 @@ async function loadLocationData() {
                             province_name: p['प्रदेश_नाम'],
                             districts: (p['जिल्लाहरू'] || []).map(function (d) {
                                 var municipalities = (d['स्थानीय_तहहरू'] || []).map(function (m) {
-                                    // Handle both plain string entries and object entries
+                                    // Always return an object with a name property
                                     if (typeof m === 'string') {
                                         return { name: m };
+                                    } else if (typeof m === 'object' && m !== null) {
+                                        return { name: m.name || m['नाम'] || '', type: m.type || m['प्रकार'] || '', wards: m.wards || m['वडा'] || '' };
+                                    } else {
+                                        return { name: '' };
                                     }
-                                    return { name: m.name || m['नाम'] || '', type: m.type || m['प्रकार'], wards: m.wards || m['वडा'] };
                                 });
                                 return { district_name: d['जिल्ला_नाम'], municipalities: municipalities };
                             })
@@ -481,6 +484,16 @@ async function loadLocationData() {
                 }
             };
         } else if (data && data.country && data.country.provinces) {
+            // Defensive: ensure all municipalities are objects with a name property
+            data.country.provinces.forEach(function (p) {
+                p.districts.forEach(function (d) {
+                    d.municipalities = (d.municipalities || []).map(function (m) {
+                        if (typeof m === 'string') return { name: m };
+                        else if (typeof m === 'object' && m !== null) return { name: m.name || '', type: m.type || '', wards: m.wards || '' };
+                        else return { name: '' };
+                    });
+                });
+            });
             locationData = data;
         } else {
             locationData = NEPAL_LOCATIONS_FALLBACK;
